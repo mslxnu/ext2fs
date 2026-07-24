@@ -34,7 +34,7 @@
  *  Modified for ext2fs by Manuel Bouyer.
  */
 
-#include <sys/endian.h>
+#include <sys/_endian.h>
 
 /*
  * Each disk drive contains some number of file systems.

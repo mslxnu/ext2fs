@@ -40,7 +40,7 @@
  */
 
 #include <sys/stat.h>
-#include <ufs/ufs/dinode.h>	/* for ufsino_t */
+//#include <ufs/ufs/dinode.h>	/* for ufsino_t */
 
 /*
  * The root inode is the root of the file system.  Inode 0 can't be used for
