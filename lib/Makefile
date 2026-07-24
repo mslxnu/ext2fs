@@ -15,8 +15,6 @@ debug:
 	$(MAKE) -C libbsdmalloc
 	$(MAKE) -C libsbuf
 	$(MAKE) -C libkext
-	$(MAKE) -C libutil
-	$(MAKE) -C diskdev_cmds/disklib
 
 release: TARGET=release
 release: debug
@@ -25,7 +23,5 @@ clean:
 	$(MAKE) -C libbsdmalloc clean
 	$(MAKE) -C libsbuf clean
 	$(MAKE) -C libkext clean
-	$(MAKE) -C libutil clean
-	$(MAKE) -C diskdev_cmds/disklib clean
 
 .PHONY: all debug release clean
