@@ -69,14 +69,16 @@ CFLAGS+= -DCONFIG_PERSONAS \
          -DCONFIG_DTRACE
 
 ifeq ($(findstring arm64,$(TARGET_TRIPLE)),arm64)
-XNU_INCLUDES := -I../include/xnu/bsd \
+XNU_INCLUDES := -I../include \
+                -I../include/xnu/bsd \
                 -I../include/xnu/libkern \
                 -I../include/xnu/osfmk \
                 -I../include/xnu/pexpert
 ARCH_SYS_INCLUDES := -isystem $(KERNEL_HEADERS)/arm64 -isystem $(KERNEL_HEADERS)/arm
 CFLAGS += -DAPPLEFIRESTORM
 else
-XNU_INCLUDES := -I../include/xnu/bsd \
+XNU_INCLUDES := -I../include \
+                -I../include/xnu/bsd \
                 -I../include/xnu/libkern \
                 -I../include/xnu/osfmk \
                 -I../include/xnu/pexpert
@@ -124,11 +126,10 @@ LDFLAGS+= -target $(TARGET_TRIPLE) \
           -Xlinker -object_path_lto ext2fs_alloc.o \
           -Xlinker -object_path_lto ext2fs_balloc.o \
           -Xlinker -object_path_lto ext2fs_bmap.o \
-          -Xlinker -object_path_lto ext2fs_bswap.o \
           -Xlinker -object_path_lto ext2fs_extents.o \
           -Xlinker -object_path_lto ext2fs_inode.o \
+          -Xlinker -object_path_lto ext2fs_inode_cnv.o \
           -Xlinker -object_path_lto ext2fs_lookup.o \
-          -Xlinker -object_path_lto ext2fs_readwrite.o \
           -Xlinker -object_path_lto ext2fs_subr.o \
           -Xlinker -object_path_lto ext2fs_vfsops.o \
           -Xlinker -object_path_lto ext2fs_vnops.o \

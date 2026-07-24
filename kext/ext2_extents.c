@@ -23,23 +23,25 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $FreeBSD: head/sys/fs/ext2fs/ext2_extents.c 254260 2013-08-12 21:34:48Z pfg $
+ * $FreeBSD$
  */
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/types.h>
 #include <sys/kernel.h>
 #include <sys/malloc.h>
 #include <sys/vnode.h>
-#include <sys/mount.h>
+#include <sys/bio.h>
 #include <sys/buf.h>
+#include <sys/conf.h>
 
-#include <ufs/ufs/quota.h>
-#include <ufs/ufs/ufsmount.h>
-#include <ufs/ufs/inode.h>
-#include <ufs/ext2fs/ext2fs.h>
-#include <ufs/ext2fs/ext2fs_extents.h>
-#include <ufs/ext2fs/ext2fs_extern.h>
+#include <fs/ext2fs/ext2_mount.h>
+#include <fs/ext2fs/fs.h>
+#include <fs/ext2fs/inode.h>
+#include <fs/ext2fs/ext2fs.h>
+#include <fs/ext2fs/ext2_extents.h>
+#include <fs/ext2fs/ext2_extern.h>
 
 static void ext4_ext_binsearch_index(struct inode *ip, struct ext4_extent_path
 		*path, daddr_t lbn)
@@ -91,7 +93,7 @@ ext4_ext_in_cache(struct inode *ip, daddr_t lbn, struct ext4_extent *ep)
 	struct ext4_extent_cache *ecp;
 	int ret = EXT4_EXT_CACHE_NO;
 
-	ecp = &ip->i_e2fs_ext_cache;
+	ecp = &ip->i_ext_cache;
 
 	/* cache is invalid */
 	if (ecp->ec_type == EXT4_EXT_CACHE_NO)
@@ -115,7 +117,7 @@ ext4_ext_put_cache(struct inode *ip, struct ext4_extent *ep, int type)
 {
 	struct ext4_extent_cache *ecp;
 
-	ecp = &ip->i_e2fs_ext_cache;
+	ecp = &ip->i_ext_cache;
 	ecp->ec_type = type;
 	ecp->ec_blk = ep->e_blk;
 	ecp->ec_len = ep->e_len;
@@ -129,14 +131,12 @@ struct ext4_extent_path *
 ext4_ext_find_extent(struct m_ext2fs *fs, struct inode *ip,
 		     daddr_t lbn, struct ext4_extent_path *path)
 {
-	struct vnode *vp;
 	struct ext4_extent_header *ehp;
 	uint16_t i;
-	int error;
+	int error, size;
 	daddr_t nblk;
 
-	vp = ITOV(ip);
-	ehp = (struct ext4_extent_header *)(char *)ip->i_e2fs_blocks;
+	ehp = (struct ext4_extent_header *)(char *)ip->i_db;
 
 	if (ehp->eh_magic != EXT4_EXT_MAGIC)
 		return (NULL);
@@ -150,12 +150,13 @@ ext4_ext_find_extent(struct m_ext2fs *fs, struct inode *ip,
 
 		nblk = (daddr_t)path->ep_index->ei_leaf_hi << 32 |
 		    path->ep_index->ei_leaf_lo;
+		size = blksize(fs, ip, nblk);
 		if (path->ep_bp != NULL) {
 			brelse(path->ep_bp);
 			path->ep_bp = NULL;
 		}
-		error = bread(ip->i_devvp, fsbtodb(fs, nblk), fs->e2fs_fsize,
-		    &path->ep_bp);
+		error = bread(ip->i_devvp, fsbtodb(fs, nblk), size, NOCRED,
+			    &path->ep_bp);
 		if (error) {
 			brelse(path->ep_bp);
 			path->ep_bp = NULL;
