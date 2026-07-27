@@ -57,6 +57,7 @@ dkms.conf
 
 # Other
 *.DS_Store
+rnd/
 
 # mSL/SysFS build outputs
 out/
