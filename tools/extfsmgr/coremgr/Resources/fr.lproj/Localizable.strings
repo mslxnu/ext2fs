@@ -1,0 +1,21 @@
+﻿/* Attempted translation by Brian Bergstrand.
+   Pardon my French. Literally. It's quite horrible. Corrections are welcome.
+   
+   Pardon mon français. C'est mauvaise.
+*/
+"Disk Image" = "Image de disque";
+"Eject" = "Éjecter";
+"External" = "Externe";
+"Internal" = "Interne";
+"Linux Ext3 (Journaled)" = "Linux Ext3 (journalisé)";
+"Mac OS Extended" = "Mac OS étendu";
+"Mac OS Extended (Journaled)" = "Mac OS étendu (journalisé)";
+"Mac OS Extended (Journaled/Case Sensitive)" = "Mac OS étendu (journalisé/casse)";
+"Mount" = "Monter";
+"Unmount" = "Démonter";
+"Virtual" = "Virtuel";
+/******* S.M.A.R.T Descriptions *******/
+"!! Critical Error !!" = "!! Critique Erreur !!";
+
+"PCI-e" = "PCIe";
+"SecureDigital" = "Secure Digital";
