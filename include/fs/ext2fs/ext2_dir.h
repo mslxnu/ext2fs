@@ -30,6 +30,18 @@
 #define	_FS_EXT2FS_EXT2_DIR_H_
 
 /*
+ * Darwin: <sys/types.h> here does not publish the fixed-width names the way
+ * FreeBSD's does, so a userland consumer that includes this header first would
+ * see uint16_t and friends undeclared. The kext build compiles -nostdinc and
+ * gets them from the kernel headers instead, hence the guard.
+ */
+#if !defined(_KERNEL) && !defined(KERNEL)
+#include <stdint.h>
+#include <sys/types.h>
+#endif
+
+
+/*
  * Structure of a directory entry
  */
 #define	EXT2FS_MAXNAMLEN	255

@@ -33,12 +33,11 @@
 
 #include <sys/param.h>	/* DEV_BSIZE roundup */
 #include <sys/time.h>
-#include <ufs/ufs/dir.h>
-#include <ufs/ext2fs/ext2fs_dinode.h>
-#include <ufs/ext2fs/ext2fs_dir.h>
-#include <ufs/ext2fs/ext2fs.h>
+#include <fs/ext2fs/ext2_dinode.h>
+#include <fs/ext2fs/ext2_dir.h>
+#include <fs/ext2fs/ext2fs.h>
+#include <fs/ext2fs/ext2_compat.h>
 
-#include <ufs/ufs/dinode.h> /* for IFMT & friends */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -60,7 +59,7 @@ struct	ext2fs_dirtemplate dirhead = {
 
 static int expanddir(struct ext2fs_dinode *, char *);
 static void freedir(ino_t, ino_t);
-static struct ext2fs_direct *fsck_readdir(struct inodesc *);
+static struct ext2fs_direct_2 *fsck_readdir(struct inodesc *);
 static struct bufarea *getdirblk(daddr32_t, long);
 static int lftempname(char *, ino_t);
 static int mkentry(struct inodesc *);
@@ -108,7 +107,7 @@ propagate(void)
 int
 dirscan(struct inodesc *idesc)
 {
-	struct ext2fs_direct *dp;
+	struct ext2fs_direct_2 *dp;
 	struct bufarea *bp;
 	int dsize, n;
 	long blksiz;
@@ -134,7 +133,7 @@ dirscan(struct inodesc *idesc)
 	for (dp = fsck_readdir(idesc); dp != NULL; dp = fsck_readdir(idesc)) {
 		dsize = letoh16(dp->e2d_reclen);
 		memcpy(dbuf, dp, (size_t)dsize);
-		idesc->id_dirp = (struct ext2fs_direct *)dbuf;
+		idesc->id_dirp = (struct ext2fs_direct_2 *)dbuf;
 		if ((n = (*idesc->id_func)(idesc)) & ALTERED) {
 			bp = getdirblk(idesc->id_blkno, blksiz);
 			memcpy(bp->b_un.b_buf + idesc->id_loc - dsize, dbuf,
@@ -154,10 +153,10 @@ dirscan(struct inodesc *idesc)
 /*
  * get next entry in a directory.
  */
-static struct ext2fs_direct *
+static struct ext2fs_direct_2 *
 fsck_readdir(struct inodesc *idesc)
 {
-	struct ext2fs_direct *dp, *ndp;
+	struct ext2fs_direct_2 *dp, *ndp;
 	struct bufarea *bp;
 	long size, blksiz, fix, dploc;
 
@@ -165,14 +164,14 @@ fsck_readdir(struct inodesc *idesc)
 	bp = getdirblk(idesc->id_blkno, blksiz);
 	if (idesc->id_loc % sblock.e2fs_bsize == 0 && idesc->id_filesize > 0 &&
 	    idesc->id_loc < blksiz) {
-		dp = (struct ext2fs_direct *)(bp->b_un.b_buf + idesc->id_loc);
+		dp = (struct ext2fs_direct_2 *)(bp->b_un.b_buf + idesc->id_loc);
 		if (dircheck(idesc, dp))
 			goto dpok;
 		if (idesc->id_fix == IGNORE)
 			return (0);
 		fix = dofix(idesc, "DIRECTORY CORRUPTED");
 		bp = getdirblk(idesc->id_blkno, blksiz);
-		dp = (struct ext2fs_direct *)(bp->b_un.b_buf + idesc->id_loc);
+		dp = (struct ext2fs_direct_2 *)(bp->b_un.b_buf + idesc->id_loc);
 		dp->e2d_reclen = htole16(sblock.e2fs_bsize);
 		dp->e2d_ino = 0;
 		dp->e2d_namlen = 0;
@@ -188,12 +187,12 @@ dpok:
 	if (idesc->id_filesize <= 0 || idesc->id_loc >= blksiz)
 		return NULL;
 	dploc = idesc->id_loc;
-	dp = (struct ext2fs_direct *)(bp->b_un.b_buf + dploc);
+	dp = (struct ext2fs_direct_2 *)(bp->b_un.b_buf + dploc);
 	idesc->id_loc += letoh16(dp->e2d_reclen);
 	idesc->id_filesize -= letoh16(dp->e2d_reclen);
 	if ((idesc->id_loc % sblock.e2fs_bsize) == 0)
 		return (dp);
-	ndp = (struct ext2fs_direct *)(bp->b_un.b_buf + idesc->id_loc);
+	ndp = (struct ext2fs_direct_2 *)(bp->b_un.b_buf + idesc->id_loc);
 	if (idesc->id_loc < blksiz && idesc->id_filesize > 0 &&
 	    dircheck(idesc, ndp) == 0) {
 		size = sblock.e2fs_bsize - (idesc->id_loc % sblock.e2fs_bsize);
@@ -203,7 +202,7 @@ dpok:
 			return (0);
 		fix = dofix(idesc, "DIRECTORY CORRUPTED");
 		bp = getdirblk(idesc->id_blkno, blksiz);
-		dp = (struct ext2fs_direct *)(bp->b_un.b_buf + dploc);
+		dp = (struct ext2fs_direct_2 *)(bp->b_un.b_buf + dploc);
 		dp->e2d_reclen = htole16(letoh16(dp->e2d_reclen) + size);
 		if (fix)
 			dirty(bp);
@@ -216,7 +215,7 @@ dpok:
  * This is a superset of the checks made in the kernel.
  */
 int
-dircheck(struct inodesc *idesc, struct ext2fs_direct *dp)
+dircheck(struct inodesc *idesc, struct ext2fs_direct_2 *dp)
 {
 	int size;
 	char *cp;
@@ -231,8 +230,8 @@ dircheck(struct inodesc *idesc, struct ext2fs_direct *dp)
 		return (0);
 	if (dp->e2d_ino == 0)
 		return (1);
-	if (sblock.e2fs.e2fs_rev < E2FS_REV1 ||
-	    (sblock.e2fs.e2fs_features_incompat & EXT2F_INCOMPAT_FTYPE) == 0)
+	if (sblock.e2fs->e2fs_rev < E2FS_REV1 ||
+	    (sblock.e2fs->e2fs_features_incompat & EXT2F_INCOMPAT_FTYPE) == 0)
 		if (dp->e2d_type != 0)
 			return (1);
 	size = EXT2FS_DIRSIZ(dp->e2d_namlen);
@@ -307,14 +306,14 @@ adjust(struct inodesc *idesc, short lcnt)
 static int
 mkentry(struct inodesc *idesc)
 {
-	struct ext2fs_direct *dirp = idesc->id_dirp;
-	struct ext2fs_direct newent;
+	struct ext2fs_direct_2 *dirp = idesc->id_dirp;
+	struct ext2fs_direct_2 newent;
 	int newlen, oldlen;
 
 	newent.e2d_type = EXT2_FT_UNKNOWN;
 	newent.e2d_namlen = strlen(idesc->id_name);
-	if (sblock.e2fs.e2fs_rev > E2FS_REV0 &&
-	    (sblock.e2fs.e2fs_features_incompat & EXT2F_INCOMPAT_FTYPE))
+	if (sblock.e2fs->e2fs_rev > E2FS_REV0 &&
+	    (sblock.e2fs->e2fs_features_incompat & EXT2F_INCOMPAT_FTYPE))
 		newent.e2d_type = inot2ext2dt(typemap[idesc->id_parent]);
 	newlen = EXT2FS_DIRSIZ(newent.e2d_namlen);
 	if (dirp->e2d_ino != 0)
@@ -325,7 +324,7 @@ mkentry(struct inodesc *idesc)
 		return (KEEPON);
 	newent.e2d_reclen = htole16(letoh16(dirp->e2d_reclen) - oldlen);
 	dirp->e2d_reclen = htole16(oldlen);
-	dirp = (struct ext2fs_direct *)(((char *)dirp) + oldlen);
+	dirp = (struct ext2fs_direct_2 *)(((char *)dirp) + oldlen);
 	dirp->e2d_ino = htole32(idesc->id_parent); /* ino to be entered is in id_parent */
 	dirp->e2d_reclen = newent.e2d_reclen;
 	dirp->e2d_namlen = newent.e2d_namlen;
@@ -337,15 +336,15 @@ mkentry(struct inodesc *idesc)
 static int
 chgino(struct inodesc *idesc)
 {
-	struct ext2fs_direct *dirp = idesc->id_dirp;
+	struct ext2fs_direct_2 *dirp = idesc->id_dirp;
 	u_int16_t namlen = dirp->e2d_namlen;
 
 	if (strlen(idesc->id_name) != namlen ||
 		strncmp(dirp->e2d_name, idesc->id_name, (int)namlen))
 		return (KEEPON);
 	dirp->e2d_ino = htole32(idesc->id_parent);
-	if (sblock.e2fs.e2fs_rev > E2FS_REV0 &&
-	    (sblock.e2fs.e2fs_features_incompat & EXT2F_INCOMPAT_FTYPE))
+	if (sblock.e2fs->e2fs_rev > E2FS_REV0 &&
+	    (sblock.e2fs->e2fs_features_incompat & EXT2F_INCOMPAT_FTYPE))
 		dirp->e2d_type = inot2ext2dt(typemap[idesc->id_parent]);
 	else
 		dirp->e2d_type = 0;
@@ -584,14 +583,14 @@ allocdir(ino_t parent, ino_t request, int mode)
 	dirhead.dot_reclen = htole16(12); /* XXX */
 	dirhead.dotdot_reclen = htole16(sblock.e2fs_bsize - 12); /* XXX */
 	dirhead.dot_namlen = 1;
-	if (sblock.e2fs.e2fs_rev > E2FS_REV0 &&
-	    (sblock.e2fs.e2fs_features_incompat & EXT2F_INCOMPAT_FTYPE))
+	if (sblock.e2fs->e2fs_rev > E2FS_REV0 &&
+	    (sblock.e2fs->e2fs_features_incompat & EXT2F_INCOMPAT_FTYPE))
 		dirhead.dot_type = EXT2_FT_DIR;
 	else
 		dirhead.dot_type = 0;
 	dirhead.dotdot_namlen = 2;
-	if (sblock.e2fs.e2fs_rev > E2FS_REV0 &&
-	    (sblock.e2fs.e2fs_features_incompat & EXT2F_INCOMPAT_FTYPE))
+	if (sblock.e2fs->e2fs_rev > E2FS_REV0 &&
+	    (sblock.e2fs->e2fs_features_incompat & EXT2F_INCOMPAT_FTYPE))
 		dirhead.dotdot_type = EXT2_FT_DIR;
 	else
 		dirhead.dotdot_type = 0;

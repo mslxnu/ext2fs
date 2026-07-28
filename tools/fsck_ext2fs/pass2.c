@@ -33,11 +33,11 @@
 
 #include <sys/param.h>	/* roundup */
 #include <sys/time.h>
-#include <ufs/ext2fs/ext2fs_dinode.h>
-#include <ufs/ext2fs/ext2fs_dir.h>
-#include <ufs/ext2fs/ext2fs.h>
+#include <fs/ext2fs/ext2_dinode.h>
+#include <fs/ext2fs/ext2_dir.h>
+#include <fs/ext2fs/ext2fs.h>
+#include <fs/ext2fs/ext2_compat.h>
 
-#include <ufs/ufs/dinode.h> /* for IFMT & friends */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -191,12 +191,12 @@ pass2(void)
 static int
 pass2check(struct inodesc *idesc)
 {
-	struct ext2fs_direct *dirp = idesc->id_dirp;
+	struct ext2fs_direct_2 *dirp = idesc->id_dirp;
 	struct inoinfo *inp;
 	int n, entrysize, ret = 0;
 	struct ext2fs_dinode *dp;
 	char *errmsg;
-	struct ext2fs_direct proto;
+	struct ext2fs_direct_2 proto;
 	char namebuf[PATH_MAX + 1];
 	char pathbuf[PATH_MAX + 1];
 
@@ -213,8 +213,8 @@ pass2check(struct inodesc *idesc)
 			if (reply("FIX") == 1)
 				ret |= ALTERED;
 		}
-		if (sblock.e2fs.e2fs_rev > E2FS_REV0 &&
-		    (sblock.e2fs.e2fs_features_incompat & EXT2F_INCOMPAT_FTYPE)
+		if (sblock.e2fs->e2fs_rev > E2FS_REV0 &&
+		    (sblock.e2fs->e2fs_features_incompat & EXT2F_INCOMPAT_FTYPE)
 		    && (dirp->e2d_type != EXT2_FT_DIR)) {
 			direrror(idesc->id_number, "BAD TYPE VALUE FOR '.'");
 			dirp->e2d_type = EXT2_FT_DIR;
@@ -226,8 +226,8 @@ pass2check(struct inodesc *idesc)
 	direrror(idesc->id_number, "MISSING '.'");
 	proto.e2d_ino = htole32(idesc->id_number);
 	proto.e2d_namlen = 1;
-	if (sblock.e2fs.e2fs_rev > E2FS_REV0 &&
-	    (sblock.e2fs.e2fs_features_incompat & EXT2F_INCOMPAT_FTYPE))
+	if (sblock.e2fs->e2fs_rev > E2FS_REV0 &&
+	    (sblock.e2fs->e2fs_features_incompat & EXT2F_INCOMPAT_FTYPE))
 		proto.e2d_type = EXT2_FT_DIR;
 	else
 		proto.e2d_type = 0;
@@ -249,7 +249,7 @@ pass2check(struct inodesc *idesc)
 		memcpy(dirp, &proto, (size_t)entrysize);
 		idesc->id_entryno++;
 		lncntp[letoh32(dirp->e2d_ino)]--;
-		dirp = (struct ext2fs_direct *)((char *)(dirp) + entrysize);
+		dirp = (struct ext2fs_direct_2 *)((char *)(dirp) + entrysize);
 		memset(dirp, 0, (size_t)n);
 		dirp->e2d_reclen = htole16(n);
 		if (reply("FIX") == 1)
@@ -261,8 +261,8 @@ chk1:
 	inp = getinoinfo(idesc->id_number);
 	proto.e2d_ino = htole32(inp->i_parent);
 	proto.e2d_namlen = 2;
-	if (sblock.e2fs.e2fs_rev > E2FS_REV0 &&
-	    (sblock.e2fs.e2fs_features_incompat & EXT2F_INCOMPAT_FTYPE))
+	if (sblock.e2fs->e2fs_rev > E2FS_REV0 &&
+	    (sblock.e2fs->e2fs_features_incompat & EXT2F_INCOMPAT_FTYPE))
 		proto.e2d_type = EXT2_FT_DIR;
 	else
 		proto.e2d_type = 0;
@@ -276,7 +276,7 @@ chk1:
 		dirp->e2d_reclen = htole16(n);
 		idesc->id_entryno++;
 		lncntp[letoh32(dirp->e2d_ino)]--;
-		dirp = (struct ext2fs_direct *)((char *)(dirp) + n);
+		dirp = (struct ext2fs_direct_2 *)((char *)(dirp) + n);
 		memset(dirp, 0, (size_t)letoh16(proto.e2d_reclen));
 		dirp->e2d_reclen = proto.e2d_reclen;
 	}
@@ -284,8 +284,8 @@ chk1:
 	    dirp->e2d_namlen == 2 &&
 	    strncmp(dirp->e2d_name, "..", 2) == 0) {
 		inp->i_dotdot = letoh32(dirp->e2d_ino);
-		if (sblock.e2fs.e2fs_rev > E2FS_REV0 &&
-		    (sblock.e2fs.e2fs_features_incompat & EXT2F_INCOMPAT_FTYPE)
+		if (sblock.e2fs->e2fs_rev > E2FS_REV0 &&
+		    (sblock.e2fs->e2fs_features_incompat & EXT2F_INCOMPAT_FTYPE)
 		    && dirp->e2d_type != EXT2_FT_DIR) {
 			direrror(idesc->id_number, "BAD TYPE VALUE FOR '..'");
 			dirp->e2d_type = EXT2_FT_DIR;
@@ -400,8 +400,8 @@ again:
 			/* fall through */
 
 		case FSTATE:
-			if (sblock.e2fs.e2fs_rev > E2FS_REV0 &&
-			    (sblock.e2fs.e2fs_features_incompat &
+			if (sblock.e2fs->e2fs_rev > E2FS_REV0 &&
+			    (sblock.e2fs->e2fs_features_incompat &
 				EXT2F_INCOMPAT_FTYPE) &&
 			    dirp->e2d_type !=
 				inot2ext2dt(typemap[letoh32(dirp->e2d_ino)])) {

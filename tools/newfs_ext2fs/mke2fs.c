@@ -101,9 +101,10 @@
 #include <sys/types.h>
 #include <sys/mman.h>
 #include <sys/time.h>
-#include <ufs/ext2fs/ext2fs_dinode.h>
-#include <ufs/ext2fs/ext2fs_dir.h>
-#include <ufs/ext2fs/ext2fs.h>
+#include <fs/ext2fs/ext2_dinode.h>
+#include <fs/ext2fs/ext2_dir.h>
+#include <fs/ext2fs/ext2fs.h>
+#include <fs/ext2fs/ext2_compat.h>
 #include <sys/ioctl.h>
 
 #include <err.h>
@@ -122,8 +123,8 @@ static void initcg(uint);
 static void zap_old_sblock(daddr32_t);
 static uint cgoverhead(uint);
 static int fsinit(const struct timeval *);
-static int makedir(struct ext2fs_direct *, int);
-static void copy_dir(struct ext2fs_direct *, struct ext2fs_direct *);
+static int makedir(struct ext2fs_direct_2 *, int);
+static void copy_dir(struct ext2fs_direct_2 *, struct ext2fs_direct_2 *);
 static void init_resizeino(const struct timeval *);
 static uint32_t alloc(uint32_t, uint16_t);
 static void iput(struct ext2fs_dinode *, ino_t);
@@ -133,7 +134,7 @@ static int ilog2(uint);
 static int skpc(int, size_t, uint8_t *);
 static void uuid_get(struct m_ext2fs *);
 
-/* XXX: some of these macro should be into <ufs/ext2fs/ext2fs.h>? */
+/* XXX: some of these macro should be into <fs/ext2fs/ext2fs.h>? */
 #define EXT2_DEF_MAX_MNT_COUNT	20
 #define EXT2_DEF_FSCKINTV	(180 * 24 * 60 * 60)	/* 180 days */
 #define EXT2_RESERVED_INODES	(EXT2_FIRSTINO - 1)
@@ -152,7 +153,7 @@ static void uuid_get(struct m_ext2fs *);
 #define NBLOCK_INODE_BITMAP	1
 
 #define cgbase(fs, c)	\
-	((fs)->e2fs.e2fs_first_dblock + (fs)->e2fs.e2fs_bpg * (c))
+	((fs)->e2fs->e2fs_first_dblock + (fs)->e2fs->e2fs_bpg * (c))
 
 #define       rounddown(x,y)  (((x)/(y))*(y))
 
@@ -161,11 +162,17 @@ static void uuid_get(struct m_ext2fs *);
  *
  *   We don't have to use or setup whole in-memory m_ext2fs structure,
  *   but prepare it to use several macro defined in kernel headers.
+ *
+ *   The shared m_ext2fs in <fs/ext2fs/ext2fs.h> refers to the on-disk
+ *   superblock through a pointer rather than embedding it, so the image being
+ *   built needs storage of its own; sb_disk below provides it and mke2fs()
+ *   links the two before touching either.
  */
 union {
 	struct m_ext2fs m_ext2fs;
 	char pad[SBSIZE];
 } ext2fsun;
+static struct ext2fs sb_disk;
 #define sblock	ext2fsun.m_ext2fs
 #define gd	ext2fsun.m_ext2fs.e2fs_gd
 
@@ -191,6 +198,9 @@ mke2fs(const char *fsys, int f)
 
 	gettimeofday(&tv, NULL);
 	fd = f;
+
+	/* Point the in-core superblock at the on-disk image being built. */
+	sblock.e2fs = &sb_disk;
 
 	/*
 	 * collect and verify the block and fragment sizes
@@ -238,14 +248,18 @@ mke2fs(const char *fsys, int f)
 		    " doesn't support %d byte inode\n", inodesize);
 	}
 
-	sblock.e2fs.e2fs_log_bsize = ilog2(bsize) - LOG_MINBSIZE;
-	sblock.e2fs.e2fs_log_fsize = ilog2(fsize) - LOG_MINFSIZE;
+	sblock.e2fs->e2fs_log_bsize = ilog2(bsize) - LOG_MINBSIZE;
+	sblock.e2fs->e2fs_log_fsize = ilog2(fsize) - LOG_MINFSIZE;
 
 	sblock.e2fs_bsize = bsize;
 	sblock.e2fs_fsize = fsize;
-	sblock.e2fs_bshift = sblock.e2fs.e2fs_log_bsize + LOG_MINBSIZE;
+	sblock.e2fs_bshift = sblock.e2fs->e2fs_log_bsize + LOG_MINBSIZE;
 	sblock.e2fs_qbmask = sblock.e2fs_bsize - 1;
-	sblock.e2fs_bmask = ~sblock.e2fs_qbmask;
+	/*
+	 * OpenBSD also kept the complement of qbmask in e2fs_bmask. The shared
+	 * m_ext2fs has no such member and nothing reads it - <fs/ext2fs/fs.h>
+	 * builds blkoff() out of e2fs_qbmask - so it is simply not set here.
+	 */
 	sblock.e2fs_fsbtodb = ilog2(sblock.e2fs_bsize) - ilog2(sectorsize);
 	sblock.e2fs_ipb = sblock.e2fs_bsize / inodesize;
 
@@ -257,9 +271,9 @@ mke2fs(const char *fsys, int f)
 	 * before superblock because superblock is allocated at SBOFF and
 	 * bsize is a power of two (i.e. 2048 bytes or more).
 	 */
-	sblock.e2fs.e2fs_first_dblock = (sblock.e2fs_bsize > BBSIZE) ? 0 : 1;
+	sblock.e2fs->e2fs_first_dblock = (sblock.e2fs_bsize > BBSIZE) ? 0 : 1;
 	minfssize = fsbtodb(&sblock,
-	    sblock.e2fs.e2fs_first_dblock +
+	    sblock.e2fs->e2fs_first_dblock +
 	    NBLOCK_SUPERBLOCK +
 	    1 /* at least one group descriptor */ +
 	    NBLOCK_BLOCK_BITMAP	+
@@ -286,7 +300,7 @@ mke2fs(const char *fsys, int f)
 	/* maybe "simple is the best" */
 	blocks_per_cg = sblock.e2fs_bsize * NBBY;
 
-	ncg = howmany(bcount - sblock.e2fs.e2fs_first_dblock, blocks_per_cg);
+	ncg = howmany(bcount - sblock.e2fs->e2fs_first_dblock, blocks_per_cg);
 	blocks_gd = howmany(sizeof(struct ext2_gd) * ncg, bsize);
 
 	/* check range of inode number */
@@ -307,7 +321,7 @@ mke2fs(const char *fsys, int f)
 	if (Oflag == 0 || cg_has_sb(ncg - 1) != 0)
 		minblocks_per_cg += NBLOCK_SUPERBLOCK + blocks_gd;
 
-	blocks_lastcg = bcount - sblock.e2fs.e2fs_first_dblock -
+	blocks_lastcg = bcount - sblock.e2fs->e2fs_first_dblock -
 	    blocks_per_cg * (ncg - 1);
 	if (blocks_lastcg < minblocks_per_cg) {
 		/*
@@ -331,34 +345,34 @@ mke2fs(const char *fsys, int f)
 
 	/* XXX: probably we should check these adjusted values again */
 
-	sblock.e2fs.e2fs_bcount = bcount;
-	sblock.e2fs.e2fs_icount = num_inodes;
+	sblock.e2fs->e2fs_bcount = bcount;
+	sblock.e2fs->e2fs_icount = num_inodes;
 
-	sblock.e2fs_ncg = ncg;
-	sblock.e2fs_ngdb = blocks_gd;
+	sblock.e2fs_gcount = ncg;
+	sblock.e2fs_gdbcount = blocks_gd;
 	sblock.e2fs_itpg = iblocks_per_cg;
 
-	sblock.e2fs.e2fs_rbcount = sblock.e2fs.e2fs_bcount * minfree / 100;
+	sblock.e2fs->e2fs_rbcount = sblock.e2fs->e2fs_bcount * minfree / 100;
 	/* e2fs_fbcount will be accounted later */
 	/* e2fs_ficount will be accounted later */
 
-	sblock.e2fs.e2fs_bpg = blocks_per_cg;
-	sblock.e2fs.e2fs_fpg = blocks_per_cg;
+	sblock.e2fs->e2fs_bpg = blocks_per_cg;
+	sblock.e2fs->e2fs_fpg = blocks_per_cg;
 
-	sblock.e2fs.e2fs_ipg = inodes_per_cg;
+	sblock.e2fs->e2fs_ipg = inodes_per_cg;
 
-	sblock.e2fs.e2fs_mtime = 0;
-	sblock.e2fs.e2fs_wtime = (u_int32_t)tv.tv_sec;
-	sblock.e2fs.e2fs_mnt_count = 0;
+	sblock.e2fs->e2fs_mtime = 0;
+	sblock.e2fs->e2fs_wtime = (u_int32_t)tv.tv_sec;
+	sblock.e2fs->e2fs_mnt_count = 0;
 	/* XXX: should add some entropy to avoid checking all fs at once? */
-	sblock.e2fs.e2fs_max_mnt_count = EXT2_DEF_MAX_MNT_COUNT;
+	sblock.e2fs->e2fs_max_mnt_count = EXT2_DEF_MAX_MNT_COUNT;
 
-	sblock.e2fs.e2fs_magic = E2FS_MAGIC;
-	sblock.e2fs.e2fs_state = E2FS_ISCLEAN;
-	sblock.e2fs.e2fs_beh = E2FS_BEH_DEFAULT;
-	sblock.e2fs.e2fs_minrev = 0;
-	sblock.e2fs.e2fs_lastfsck = (u_int32_t)tv.tv_sec;
-	sblock.e2fs.e2fs_fsckintv = EXT2_DEF_FSCKINTV;
+	sblock.e2fs->e2fs_magic = E2FS_MAGIC;
+	sblock.e2fs->e2fs_state = E2FS_ISCLEAN;
+	sblock.e2fs->e2fs_beh = E2FS_BEH_DEFAULT;
+	sblock.e2fs->e2fs_minrev = 0;
+	sblock.e2fs->e2fs_lastfsck = (u_int32_t)tv.tv_sec;
+	sblock.e2fs->e2fs_fsckintv = EXT2_DEF_FSCKINTV;
 
 	/*
 	 * Maybe we can use E2FS_OS_FREEBSD here and it would be more proper,
@@ -371,15 +385,15 @@ mke2fs(const char *fsys, int f)
 	 * Anyway, I hope that all newer such boxes will keep their support
 	 * for the "GOOD_OLD_REV" ext2fs.
 	 */
-	sblock.e2fs.e2fs_creator = E2FS_OS_LINUX;
+	sblock.e2fs->e2fs_creator = E2FS_OS_LINUX;
 
 	if (Oflag == 0) {
-		sblock.e2fs.e2fs_rev = E2FS_REV0;
-		sblock.e2fs.e2fs_features_compat   = 0;
-		sblock.e2fs.e2fs_features_incompat = 0;
-		sblock.e2fs.e2fs_features_rocompat = 0;
+		sblock.e2fs->e2fs_rev = E2FS_REV0;
+		sblock.e2fs->e2fs_features_compat   = 0;
+		sblock.e2fs->e2fs_features_incompat = 0;
+		sblock.e2fs->e2fs_features_rocompat = 0;
 	} else {
-		sblock.e2fs.e2fs_rev = E2FS_REV1;
+		sblock.e2fs->e2fs_rev = E2FS_REV1;
 		/*
 		 * e2fsprogs say "REV1" is "dynamic" so
 		 * it isn't quite a version and maybe it means
@@ -389,50 +403,50 @@ mke2fs(const char *fsys, int f)
 		 *      the EXT2F_COMPAT_RESIZE feature and
 		 *      fsck_ext2fs(8) might not fix structures for it.
 		 */
-		sblock.e2fs.e2fs_features_compat   = EXT2F_COMPAT_RESIZE;
-		sblock.e2fs.e2fs_features_incompat = EXT2F_INCOMPAT_FTYPE;
-		sblock.e2fs.e2fs_features_rocompat =
+		sblock.e2fs->e2fs_features_compat   = EXT2F_COMPAT_RESIZE;
+		sblock.e2fs->e2fs_features_incompat = EXT2F_INCOMPAT_FTYPE;
+		sblock.e2fs->e2fs_features_rocompat =
 		    EXT2F_ROCOMPAT_SPARSE_SUPER | EXT2F_ROCOMPAT_LARGE_FILE;
 	}
 
-	sblock.e2fs.e2fs_ruid = geteuid();
-	sblock.e2fs.e2fs_rgid = getegid();
+	sblock.e2fs->e2fs_ruid = geteuid();
+	sblock.e2fs->e2fs_rgid = getegid();
 
-	sblock.e2fs.e2fs_first_ino = EXT2_FIRSTINO;
-	sblock.e2fs.e2fs_inode_size = inodesize;
+	sblock.e2fs->e2fs_first_ino = EXT2_FIRSTINO;
+	sblock.e2fs->e2fs_inode_size = inodesize;
 
 	/* e2fs_block_group_nr is set on writing superblock to each group */
 
 	uuid_get(&sblock);
 	if (volname != NULL) {
-		if (strlen(volname) > sizeof(sblock.e2fs.e2fs_vname))
+		if (strlen(volname) > sizeof(sblock.e2fs->e2fs_vname))
 			errx(EXIT_FAILURE, "Volume name is too long");
-		strlcpy(sblock.e2fs.e2fs_vname, volname,
-		    sizeof(sblock.e2fs.e2fs_vname));
+		strlcpy(sblock.e2fs->e2fs_vname, volname,
+		    sizeof(sblock.e2fs->e2fs_vname));
 	}
 
-	sblock.e2fs.e2fs_fsmnt[0] = '\0';
+	sblock.e2fs->e2fs_fsmnt[0] = '\0';
 	sblock.e2fs_fsmnt[0] = '\0';
 
-	sblock.e2fs.e2fs_algo = 0;		/* XXX unsupported? */
-	sblock.e2fs.e2fs_prealloc = 0;		/* XXX unsupported? */
-	sblock.e2fs.e2fs_dir_prealloc = 0;	/* XXX unsupported? */
+	sblock.e2fs->e2fs_algo = 0;		/* XXX unsupported? */
+	sblock.e2fs->e2fs_prealloc = 0;		/* XXX unsupported? */
+	sblock.e2fs->e2fs_dir_prealloc = 0;	/* XXX unsupported? */
 
 	/* calculate blocks for reserved group descriptors for resize */
-	sblock.e2fs.e2fs_reserved_ngdb = 0;
-	if (sblock.e2fs.e2fs_rev > E2FS_REV0 &&
-	    (sblock.e2fs.e2fs_features_compat & EXT2F_COMPAT_RESIZE) != 0) {
+	sblock.e2fs->e2fs_reserved_ngdb = 0;
+	if (sblock.e2fs->e2fs_rev > E2FS_REV0 &&
+	    (sblock.e2fs->e2fs_features_compat & EXT2F_COMPAT_RESIZE) != 0) {
 		uint64_t target_blocks;
 		uint target_ncg, target_ngdb, reserved_ngdb;
 
 		/* reserve descriptors for size as 1024 times as current */
 		target_blocks =
-		    (sblock.e2fs.e2fs_bcount - sblock.e2fs.e2fs_first_dblock)
+		    (sblock.e2fs->e2fs_bcount - sblock.e2fs->e2fs_first_dblock)
 		    * 1024ULL;
 		/* number of blocks must be in uint32_t */
 		if (target_blocks > UINT32_MAX)
 			target_blocks = UINT32_MAX;
-		target_ncg = howmany(target_blocks, sblock.e2fs.e2fs_bpg);
+		target_ncg = howmany(target_blocks, sblock.e2fs->e2fs_bpg);
 		target_ngdb = howmany(sizeof(struct ext2_gd) * target_ncg,
 		    sblock.e2fs_bsize);
 		/*
@@ -442,7 +456,7 @@ mke2fs(const char *fsys, int f)
 		 * the blocks is NINDIR(fs).
 		 * (see also descriptions in init_resizeino() function)
 		 *
-		 * We check a number including current e2fs_ngdb here
+		 * We check a number including current e2fs_gdbcount here
 		 * because they will be moved into reserved gdb on
 		 * possible future size shrink, though e2fsprogs don't
 		 * seem to care about it.
@@ -450,23 +464,23 @@ mke2fs(const char *fsys, int f)
 		if (target_ngdb > NINDIR(&sblock))
 			target_ngdb = NINDIR(&sblock);
 
-		reserved_ngdb = target_ngdb - sblock.e2fs_ngdb;
+		reserved_ngdb = target_ngdb - sblock.e2fs_gdbcount;
 
 		/* make sure reserved_ngdb fits in the last cg */
 		if (reserved_ngdb >= blocks_lastcg - cgoverhead(ncg - 1))
 			reserved_ngdb = blocks_lastcg - cgoverhead(ncg - 1);
 		if (reserved_ngdb == 0) {
 			/* if no space for reserved gdb, disable the feature */
-			sblock.e2fs.e2fs_features_compat &=
+			sblock.e2fs->e2fs_features_compat &=
 			    ~EXT2F_COMPAT_RESIZE;
 		}
-		sblock.e2fs.e2fs_reserved_ngdb = reserved_ngdb;
+		sblock.e2fs->e2fs_reserved_ngdb = reserved_ngdb;
 	}
 
 	/*
 	 * Initialize group descriptors
 	 */
-	gd = calloc(sblock.e2fs_ngdb, bsize);
+	gd = calloc(sblock.e2fs_gdbcount, bsize);
 	if (gd == NULL)
 		errx(EXIT_FAILURE, "Can't allocate descriptors buffer");
 
@@ -476,15 +490,15 @@ mke2fs(const char *fsys, int f)
 		uint boffset;
 
 		boffset = cgbase(&sblock, cylno);
-		if (sblock.e2fs.e2fs_rev == E2FS_REV0 ||
-		    (sblock.e2fs.e2fs_features_rocompat &
+		if (sblock.e2fs->e2fs_rev == E2FS_REV0 ||
+		    (sblock.e2fs->e2fs_features_rocompat &
 		     EXT2F_ROCOMPAT_SPARSE_SUPER) == 0 ||
 		    cg_has_sb(cylno)) {
-			boffset += NBLOCK_SUPERBLOCK + sblock.e2fs_ngdb;
-			if (sblock.e2fs.e2fs_rev > E2FS_REV0 &&
-			    (sblock.e2fs.e2fs_features_compat &
+			boffset += NBLOCK_SUPERBLOCK + sblock.e2fs_gdbcount;
+			if (sblock.e2fs->e2fs_rev > E2FS_REV0 &&
+			    (sblock.e2fs->e2fs_features_compat &
 			     EXT2F_COMPAT_RESIZE) != 0)
-				boffset += sblock.e2fs.e2fs_reserved_ngdb;
+				boffset += sblock.e2fs->e2fs_reserved_ngdb;
 		}
 		gd[cylno].ext2bgd_b_bitmap = boffset;
 		boffset += NBLOCK_BLOCK_BITMAP;
@@ -496,9 +510,9 @@ mke2fs(const char *fsys, int f)
 			    blocks_lastcg - cgoverhead(cylno);
 		else
 			gd[cylno].ext2bgd_nbfree =
-			    sblock.e2fs.e2fs_bpg - cgoverhead(cylno);
+			    sblock.e2fs->e2fs_bpg - cgoverhead(cylno);
 		fbcount += gd[cylno].ext2bgd_nbfree;
-		gd[cylno].ext2bgd_nifree = sblock.e2fs.e2fs_ipg;
+		gd[cylno].ext2bgd_nifree = sblock.e2fs->e2fs_ipg;
 		if (cylno == 0) {
 			/* take reserved inodes off nifree */
 			gd[cylno].ext2bgd_nifree -= EXT2_RESERVED_INODES;
@@ -506,8 +520,8 @@ mke2fs(const char *fsys, int f)
 		ficount += gd[cylno].ext2bgd_nifree;
 		gd[cylno].ext2bgd_ndirs = 0;
 	}
-	sblock.e2fs.e2fs_fbcount = fbcount;
-	sblock.e2fs.e2fs_ficount = ficount;
+	sblock.e2fs->e2fs_fbcount = fbcount;
+	sblock.e2fs->e2fs_ficount = ficount;
 
 	/*
 	 * Dump out summary information about file system.
@@ -523,14 +537,14 @@ mke2fs(const char *fsys, int f)
 		    fssize, bsize, fsize);
 		printf("\tusing %u block groups of %u.0MB, %u blks, "
 		    "%u inodes.\n",
-		    ncg, bsize * sblock.e2fs.e2fs_bpg / (1024 * 1024),
-		    sblock.e2fs.e2fs_bpg, sblock.e2fs.e2fs_ipg);
+		    ncg, bsize * sblock.e2fs->e2fs_bpg / (1024 * 1024),
+		    sblock.e2fs->e2fs_bpg, sblock.e2fs->e2fs_ipg);
 	}
 
 	/*
 	 * allocate space for superblock and group descriptors
 	 */
-	iobufsize = (NBLOCK_SUPERBLOCK + sblock.e2fs_ngdb) * sblock.e2fs_bsize;
+	iobufsize = (NBLOCK_SUPERBLOCK + sblock.e2fs_gdbcount) * sblock.e2fs_bsize;
 	iobuf = mmap(0, iobufsize, PROT_READ|PROT_WRITE,
 	    MAP_ANON|MAP_PRIVATE, -1, 0);
 	if (iobuf == MAP_FAILED)
@@ -591,8 +605,8 @@ mke2fs(const char *fsys, int f)
 		if (cylno == 0)
 			continue;
 		/* skip if this cylinder doesn't have a backup */
-		if (sblock.e2fs.e2fs_rev > E2FS_REV0 &&
-		    (sblock.e2fs.e2fs_features_rocompat &
+		if (sblock.e2fs->e2fs_rev > E2FS_REV0 &&
+		    (sblock.e2fs->e2fs_features_rocompat &
 		     EXT2F_ROCOMPAT_SPARSE_SUPER) != 0 &&
 		    cg_has_sb(cylno) == 0)
 			continue;
@@ -616,7 +630,7 @@ mke2fs(const char *fsys, int f)
 		/* Next number won't fit, need a newline */
 		if (verbosity <= 3) {
 			/* Print dots for subsequent cylinder groups */
-			delta = sblock.e2fs_ncg - cylno - 1;
+			delta = sblock.e2fs_gcount - cylno - 1;
 			if (delta != 0) {
 				if (Nflag) {
 					printf(" ...");
@@ -642,19 +656,19 @@ mke2fs(const char *fsys, int f)
 	/*
 	 * Write out the superblock and group descriptors
 	 */
-	sblock.e2fs.e2fs_block_group_nr = 0;
+	sblock.e2fs->e2fs_block_group_nr = 0;
 	sboff = 0;
 	if (cgbase(&sblock, 0) == 0) {
 		/*
 		 * If the first block contains the boot block sectors,
-		 * (i.e. in case of sblock.e2fs.e2fs_bsize > BBSIZE)
+		 * (i.e. in case of sblock.e2fs->e2fs_bsize > BBSIZE)
 		 * we have to preserve data in it.
 		 */
 		sboff = SBOFF;
 	}
-	e2fs_sbsave(&sblock.e2fs, (struct ext2fs *)(iobuf + sboff));
+	e2fs_sbsave(sblock.e2fs, (struct ext2fs *)(iobuf + sboff));
 	e2fs_cgsave(gd, (struct ext2_gd *)(iobuf + sblock.e2fs_bsize),
-	   sizeof(struct ext2_gd) * sblock.e2fs_ncg);
+	   sizeof(struct ext2_gd) * sblock.e2fs_gcount);
 	wtfs(fsbtodb(&sblock, cgbase(&sblock, 0)) + sboff / sectorsize,
 	    iobufsize - sboff, iobuf + sboff);
 
@@ -673,20 +687,20 @@ initcg(uint cylno)
 	/*
 	 * Make a copy of the superblock and group descriptors.
 	 */
-	if (sblock.e2fs.e2fs_rev == E2FS_REV0 ||
-	    (sblock.e2fs.e2fs_features_rocompat &
+	if (sblock.e2fs->e2fs_rev == E2FS_REV0 ||
+	    (sblock.e2fs->e2fs_features_rocompat &
 	     EXT2F_ROCOMPAT_SPARSE_SUPER) == 0 ||
 	    cg_has_sb(cylno)) {
-		sblock.e2fs.e2fs_block_group_nr = cylno;
+		sblock.e2fs->e2fs_block_group_nr = cylno;
 		sboff = 0;
 		if (cgbase(&sblock, cylno) == 0) {
 			/* preserve data in bootblock in cg0 */
 			sboff = SBOFF;
 		}
-		e2fs_sbsave(&sblock.e2fs, (struct ext2fs *)(iobuf + sboff));
+		e2fs_sbsave(sblock.e2fs, (struct ext2fs *)(iobuf + sboff));
 		e2fs_cgsave(gd, (struct ext2_gd *)(iobuf +
 		    sblock.e2fs_bsize * NBLOCK_SUPERBLOCK),
-		    sizeof(struct ext2_gd) * sblock.e2fs_ncg);
+		    sizeof(struct ext2_gd) * sblock.e2fs_gcount);
 		/* write superblock and group descriptor backups */
 		wtfs(fsbtodb(&sblock, cgbase(&sblock, cylno)) +
 		    sboff / sectorsize, iobufsize - sboff, iobuf + sboff);
@@ -696,13 +710,13 @@ initcg(uint cylno)
 	 * Initialize block bitmap.
 	 */
 	memset(buf, 0, sblock.e2fs_bsize);
-	if (cylno == (sblock.e2fs_ncg - 1)) {
+	if (cylno == (sblock.e2fs_gcount - 1)) {
 		/* The last group could have less blocks than e2fs_bpg. */
-		nblcg = sblock.e2fs.e2fs_bcount -
-		    cgbase(&sblock, sblock.e2fs_ncg - 1);
+		nblcg = sblock.e2fs->e2fs_bcount -
+		    cgbase(&sblock, sblock.e2fs_gcount - 1);
 		for (i = nblcg; i < roundup(nblcg, NBBY); i++)
 			setbit(buf, i);
-		memset(&buf[i / NBBY], ~0U, sblock.e2fs.e2fs_bpg - i);
+		memset(&buf[i / NBBY], ~0U, sblock.e2fs->e2fs_bpg - i);
 	}
 	/* set overhead (superblock, group descriptor etc.) blocks used */
 	for (i = 0; i < cgoverhead(cylno) / NBBY; i++)
@@ -720,7 +734,7 @@ initcg(uint cylno)
 	 *  it's a multiple of e2fs_ipb (as we did above).
 	 *  Note even (possibly smaller) the last group has the same e2fs_ipg.
 	 */
-	i = sblock.e2fs.e2fs_ipg / NBBY;
+	i = sblock.e2fs->e2fs_ipg / NBBY;
 	memset(buf, 0, i);
 	memset(buf + i, ~0U, sblock.e2fs_bsize - i);
 	if (cylno == 0) {
@@ -783,7 +797,7 @@ zap_old_sblock(daddr32_t sec)
 
 	if (cg0_data == 0) {
 		cg0_data =
-		    ((daddr32_t)sblock.e2fs.e2fs_first_dblock + cgoverhead(0)) *
+		    ((daddr32_t)sblock.e2fs->e2fs_first_dblock + cgoverhead(0)) *
 		    sblock.e2fs_bsize / sectorsize;
 	}
 
@@ -791,7 +805,7 @@ zap_old_sblock(daddr32_t sec)
 	if (sec >= fssize)
 		return;
 	/* Zero anything inside our filesystem... */
-	if (sec >= sblock.e2fs.e2fs_first_dblock * bsize / sectorsize) {
+	if (sec >= sblock.e2fs->e2fs_first_dblock * bsize / sectorsize) {
 		/* ...unless we will write that area anyway */
 		if (sec >= cg0_data)
 			/* assume iobuf is zero'ed here */
@@ -834,16 +848,16 @@ cgoverhead(uint c)
 
 	overh = NBLOCK_BLOCK_BITMAP + NBLOCK_INODE_BITMAP + sblock.e2fs_itpg;
 
-	if (sblock.e2fs.e2fs_rev == E2FS_REV0 ||
-	    (sblock.e2fs.e2fs_features_rocompat &
+	if (sblock.e2fs->e2fs_rev == E2FS_REV0 ||
+	    (sblock.e2fs->e2fs_features_rocompat &
 	     EXT2F_ROCOMPAT_SPARSE_SUPER) == 0 ||
 	    cg_has_sb(c) != 0) {
-		overh += NBLOCK_SUPERBLOCK + sblock.e2fs_ngdb;
+		overh += NBLOCK_SUPERBLOCK + sblock.e2fs_gdbcount;
 
-		if (sblock.e2fs.e2fs_rev > E2FS_REV0 &&
-		    (sblock.e2fs.e2fs_features_compat &
+		if (sblock.e2fs->e2fs_rev > E2FS_REV0 &&
+		    (sblock.e2fs->e2fs_features_compat &
 		     EXT2F_COMPAT_RESIZE) != 0)
-			overh += sblock.e2fs.e2fs_reserved_ngdb;
+			overh += sblock.e2fs->e2fs_reserved_ngdb;
 	}
 
 	return overh;
@@ -863,7 +877,7 @@ cgoverhead(uint c)
 #define	PREDEFROOTDIR	PREDEFDIR
 #endif
 
-struct ext2fs_direct root_dir[] = {
+struct ext2fs_direct_2 root_dir[] = {
 	{ EXT2_ROOTINO, 0, 1, 0, "." },
 	{ EXT2_ROOTINO, 0, 2, 0, ".." },
 #ifdef LOSTDIR
@@ -872,11 +886,11 @@ struct ext2fs_direct root_dir[] = {
 };
 
 #ifdef LOSTDIR
-struct ext2fs_direct lost_found_dir[] = {
+struct ext2fs_direct_2 lost_found_dir[] = {
 	{ EXT2_LOSTFOUNDINO, 0, 1, 0, "." },
 	{ EXT2_ROOTINO, 0, 2, 0, ".." },
 };
-struct ext2fs_direct pad_dir = { 0, sizeof(struct ext2fs_direct), 0, 0, "" };
+struct ext2fs_direct_2 pad_dir = { 0, sizeof(struct ext2fs_direct_2), 0, 0, "" };
 #endif
 
 int
@@ -890,8 +904,8 @@ fsinit(const struct timeval *tv)
 	/*
 	 * Initialize the inode for the resizefs feature
 	 */
-	if (sblock.e2fs.e2fs_rev > E2FS_REV0 &&
-	    (sblock.e2fs.e2fs_features_compat & EXT2F_COMPAT_RESIZE) != 0)
+	if (sblock.e2fs->e2fs_rev > E2FS_REV0 &&
+	    (sblock.e2fs->e2fs_features_compat & EXT2F_COMPAT_RESIZE) != 0)
 		init_resizeino(tv);
 
 	/*
@@ -902,8 +916,8 @@ fsinit(const struct timeval *tv)
 	/*
 	 * Create the lost+found directory
 	 */
-	if (sblock.e2fs.e2fs_rev > E2FS_REV0 &&
-	    sblock.e2fs.e2fs_features_incompat & EXT2F_INCOMPAT_FTYPE) {
+	if (sblock.e2fs->e2fs_rev > E2FS_REV0 &&
+	    sblock.e2fs->e2fs_features_incompat & EXT2F_INCOMPAT_FTYPE) {
 		lost_found_dir[0].e2d_type = EXT2_FT_DIR;
 		lost_found_dir[1].e2d_type = EXT2_FT_DIR;
 	}
@@ -917,12 +931,12 @@ fsinit(const struct timeval *tv)
 
 	memset(&node, 0, sizeof(node));
 	node.e2di_mode = EXT2_IFDIR | EXT2_LOSTFOUNDUMASK;
-	node.e2di_uid_low = geteuid();
+	node.e2di_uid = geteuid();
 	node.e2di_size = sblock.e2fs_bsize * nblks_lostfound;
 	node.e2di_atime = (u_int32_t)tv->tv_sec;
 	node.e2di_ctime = (u_int32_t)tv->tv_sec;
 	node.e2di_mtime = (u_int32_t)tv->tv_sec;
-	node.e2di_gid_low = getegid();
+	node.e2di_gid = getegid();
 	node.e2di_nlink = PREDEFDIR;
 	/* e2di_nblock is a number of disk blocks, not ext2fs blocks */
 	node.e2di_nblock = fsbtodb(&sblock, nblks_lostfound);
@@ -944,7 +958,7 @@ fsinit(const struct timeval *tv)
 	pad_dir.e2d_reclen = sblock.e2fs_bsize;
 	for (i = 1; i < nblks_lostfound; i++) {
 		memset(buf, 0, sblock.e2fs_bsize);
-		copy_dir(&pad_dir, (struct ext2fs_direct *)buf);
+		copy_dir(&pad_dir, (struct ext2fs_direct_2 *)buf);
 		wtfs(fsbtodb(&sblock, node.e2di_blocks[i]), sblock.e2fs_bsize,
 		    buf);
 	}
@@ -954,8 +968,8 @@ fsinit(const struct timeval *tv)
 	 * create the root directory
 	 */
 	memset(&node, 0, sizeof(node));
-	if (sblock.e2fs.e2fs_rev > E2FS_REV0 &&
-	    sblock.e2fs.e2fs_features_incompat & EXT2F_INCOMPAT_FTYPE) {
+	if (sblock.e2fs->e2fs_rev > E2FS_REV0 &&
+	    sblock.e2fs->e2fs_features_incompat & EXT2F_INCOMPAT_FTYPE) {
 		root_dir[0].e2d_type = EXT2_FT_DIR;
 		root_dir[1].e2d_type = EXT2_FT_DIR;
 #ifdef LOSTDIR
@@ -963,12 +977,12 @@ fsinit(const struct timeval *tv)
 #endif
 	}
 	node.e2di_mode = EXT2_IFDIR | EXT2_UMASK;
-	node.e2di_uid_low = geteuid();
+	node.e2di_uid = geteuid();
 	node.e2di_size = makedir(root_dir, nitems(root_dir));
 	node.e2di_atime = (u_int32_t)tv->tv_sec;
 	node.e2di_ctime = (u_int32_t)tv->tv_sec;
 	node.e2di_mtime = (u_int32_t)tv->tv_sec;
-	node.e2di_gid_low = getegid();
+	node.e2di_gid = getegid();
 	node.e2di_nlink = PREDEFROOTDIR;
 	/* e2di_nblock is a number of disk block, not ext2fs block */
 	node.e2di_nblock = fsbtodb(&sblock, 1);
@@ -987,7 +1001,7 @@ fsinit(const struct timeval *tv)
  * return size of directory.
  */
 int
-makedir(struct ext2fs_direct *protodir, int entries)
+makedir(struct ext2fs_direct_2 *protodir, int entries)
 {
 	uint8_t *cp;
 	uint i, spcleft;
@@ -998,12 +1012,12 @@ makedir(struct ext2fs_direct *protodir, int entries)
 	spcleft = dirblksiz;
 	for (cp = buf, i = 0; i < entries - 1; i++) {
 		protodir[i].e2d_reclen = EXT2FS_DIRSIZ(protodir[i].e2d_namlen);
-		copy_dir(&protodir[i], (struct ext2fs_direct *)cp);
+		copy_dir(&protodir[i], (struct ext2fs_direct_2 *)cp);
 		cp += protodir[i].e2d_reclen;
 		spcleft -= protodir[i].e2d_reclen;
 	}
 	protodir[i].e2d_reclen = spcleft;
-	copy_dir(&protodir[i], (struct ext2fs_direct *)cp);
+	copy_dir(&protodir[i], (struct ext2fs_direct_2 *)cp);
 	return dirblksiz;
 }
 
@@ -1011,7 +1025,7 @@ makedir(struct ext2fs_direct *protodir, int entries)
  * Copy a direntry to a buffer, in fs byte order
  */
 static void
-copy_dir(struct ext2fs_direct *dir, struct ext2fs_direct *dbuf)
+copy_dir(struct ext2fs_direct_2 *dir, struct ext2fs_direct_2 *dbuf)
 {
 
 	memcpy(dbuf, dir, EXT2FS_DIRSIZ(dir->e2d_namlen));
@@ -1057,11 +1071,11 @@ init_resizeino(const struct timeval *tv)
 	 * IFREG for RESIZEINO since a certain resize tool used it. Hmm.
 	 */
 	node.e2di_mode = EXT2_IFREG | EXT2_RESIZEINOUMASK;
-	node.e2di_uid_low = geteuid();
+	node.e2di_uid = geteuid();
 	node.e2di_atime = (u_int32_t)tv->tv_sec;
 	node.e2di_ctime = (u_int32_t)tv->tv_sec;
 	node.e2di_mtime = (u_int32_t)tv->tv_sec;
-	node.e2di_gid_low = getegid();
+	node.e2di_gid = getegid();
 	node.e2di_nlink = 1;
 
 	/*
@@ -1076,10 +1090,10 @@ init_resizeino(const struct timeval *tv)
 	 * We have to allocate a block for the first level double
 	 * indirect reference block. Indexes of inode entries in
 	 * this first level dindirect block are corresponding to
-	 * indexes of group descriptors including both used (e2fs_ngdb)
+	 * indexes of group descriptors including both used (e2fs_gdbcount)
 	 * and reserved (e2fs_reserved_ngdb) group descriptor blocks.
 	 *
-	 * Inode entries of indexes for used (e2fs_ngdb) descriptors are
+	 * Inode entries of indexes for used (e2fs_gdbcount) descriptors are
 	 * left zero'ed. Entries for reserved (e2fs_reserved_ngdb) ones
 	 * have block numbers of actual reserved group descriptors
 	 * allocated at block group zero. This means e2fs_reserved_ngdb
@@ -1092,7 +1106,7 @@ init_resizeino(const struct timeval *tv)
 	 * descriptor blocks in the first block group) should have
 	 * block numbers of its backups in all other block groups.
 	 * I.e. reserved_ngdb[0] block in block group 0 contains block
-	 * numbers of resreved_ngdb[0] from group 1 through (e2fs_ncg - 1).
+	 * numbers of resreved_ngdb[0] from group 1 through (e2fs_gcount - 1).
 	 * The number of backups can be determined by the
 	 * EXT2_ROCOMPAT_SPARSESUPER feature and cg_has_sb() macro
 	 * as done in the above initcg() function.
@@ -1103,16 +1117,16 @@ init_resizeino(const struct timeval *tv)
 	    (uint64_t)sblock.e2fs_bsize * NINDIR(&sblock) +
 	    (uint64_t)sblock.e2fs_bsize * NINDIR(&sblock) * NINDIR(&sblock);
 	if (isize > UINT32_MAX &&
-	    (sblock.e2fs.e2fs_features_rocompat &
+	    (sblock.e2fs->e2fs_features_rocompat &
 	     EXT2F_ROCOMPAT_LARGE_FILE) == 0) {
 		/* XXX should enable it here and update all backups? */
 		errx(EXIT_FAILURE, "%s: large_file rocompat feature is "
 		    "required to enable resize feature for this filesystem\n",
 		    __func__);
 	}
-	/* upper 32bit is stored into e2di_size_hi on REV1 feature */
+	/* upper 32bit is stored into e2di_size_high on REV1 feature */
 	node.e2di_size = isize & UINT32_MAX;
-	node.e2di_size_hi = isize >> 32;
+	node.e2di_size_high = isize >> 32;
 
 #define SINGLE	0	/* index of single indirect block */
 #define DOUBLE	1	/* index of double indirect block */
@@ -1152,11 +1166,11 @@ init_resizeino(const struct timeval *tv)
 	/*
 	 * Setup block entries in the first level dindirect blocks
 	 */
-	for (i = 0; i < sblock.e2fs_ngdb; i++) {
+	for (i = 0; i < sblock.e2fs_gdbcount; i++) {
 		/* no need to handle used group descriptor blocks */
 		dindir_block[i] = 0;
 	}
-	for (; i < sblock.e2fs_ngdb + sblock.e2fs.e2fs_reserved_ngdb; i++) {
+	for (; i < sblock.e2fs_gdbcount + sblock.e2fs->e2fs_reserved_ngdb; i++) {
 		/*
 		 * point reserved group descriptor block in the first
 		 * (i.e. master) block group
@@ -1169,7 +1183,7 @@ init_resizeino(const struct timeval *tv)
 		if (i >= NINDIR(&sblock))
 			errx(EXIT_FAILURE, "%s: too many reserved "
 			    "group descriptors (%u) for resize inode",
-			    __func__, sblock.e2fs.e2fs_reserved_ngdb);
+			    __func__, sblock.e2fs->e2fs_reserved_ngdb);
 		dindir_block[i] =
 		    htole32(cgbase(&sblock, 0) + NBLOCK_SUPERBLOCK + i);
 
@@ -1178,9 +1192,9 @@ init_resizeino(const struct timeval *tv)
 		 * (which are primary reserved group descriptor blocks)
 		 * to point their backups.
 		 */
-		for (n = 0, cylno = 1; cylno < sblock.e2fs_ncg; cylno++) {
+		for (n = 0, cylno = 1; cylno < sblock.e2fs_gcount; cylno++) {
 			/* skip block groups without backup */
-			if ((sblock.e2fs.e2fs_features_rocompat &
+			if ((sblock.e2fs->e2fs_features_rocompat &
 			     EXT2F_ROCOMPAT_SPARSE_SUPER) != 0 &&
 			    cg_has_sb(cylno) == 0)
 				continue;
@@ -1244,7 +1258,7 @@ alloc(uint32_t size, uint16_t mode)
 	rdfs(fsbtodb(&sblock, gd[0].ext2bgd_b_bitmap), sblock.e2fs_bsize, bbp);
 
 	/* XXX: kernel uses e2fs_fpg here */
-	len = sblock.e2fs.e2fs_bpg / NBBY;
+	len = sblock.e2fs->e2fs_bpg / NBBY;
 
 #if 0	/* no need block allocation for root or lost+found dir */
 	for (loc = 0; loc < len; loc++) {
@@ -1281,9 +1295,9 @@ alloc(uint32_t size, uint16_t mode)
 	gd[0].ext2bgd_nbfree--;
 	if ((mode & EXT2_IFDIR) != 0)
 		gd[0].ext2bgd_ndirs++;
-	sblock.e2fs.e2fs_fbcount--;
+	sblock.e2fs->e2fs_fbcount--;
 
-	return sblock.e2fs.e2fs_first_dblock + bno;
+	return sblock.e2fs->e2fs_first_dblock + bno;
 }
 
 /*
@@ -1329,10 +1343,10 @@ iput(struct ext2fs_dinode *ip, ino_t ino)
 		wtfs(fsbtodb(&sblock, gd[0].ext2bgd_i_bitmap),
 		    sblock.e2fs_bsize, bp);
 		gd[c].ext2bgd_nifree--;
-		sblock.e2fs.e2fs_ficount--;
+		sblock.e2fs->e2fs_ficount--;
 	}
 
-	if (ino >= sblock.e2fs.e2fs_ipg * sblock.e2fs_ncg)
+	if (ino >= sblock.e2fs->e2fs_ipg * sblock.e2fs_gcount)
 		errx(EXIT_FAILURE, "%s: inode value out of range (%" PRIu64
 		    ").\n", __func__, (uint64_t)ino);
 
@@ -1421,7 +1435,7 @@ skpc(int mask, size_t size, uint8_t *cp)
 static void
 uuid_get(struct m_ext2fs *sb)
 {
-	unsigned char buf[sizeof(sb->e2fs.e2fs_uuid)];
+	unsigned char buf[sizeof(sb->e2fs->e2fs_uuid)];
 
 	arc4random_buf(buf, sizeof(buf));
 	/* UUID version 4: random */
@@ -1430,5 +1444,5 @@ uuid_get(struct m_ext2fs *sb)
 	/* RFC4122 variant */
 	buf[8] &= 0x3f;
 	buf[8] |= 0x80;
-	memcpy(sb->e2fs.e2fs_uuid, buf, sizeof(sb->e2fs.e2fs_uuid));
+	memcpy(sb->e2fs->e2fs_uuid, buf, sizeof(sb->e2fs->e2fs_uuid));
 }

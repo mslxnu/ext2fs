@@ -43,6 +43,7 @@
 #include <sys/stat.h>
 
 #include "fsutil.h"
+#include "bsdcompat.h"
 
 static const char *dev = NULL;
 static const char *origdev = NULL;

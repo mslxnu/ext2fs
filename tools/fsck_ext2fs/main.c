@@ -35,8 +35,10 @@
 #include <sys/signal.h>
 #include <sys/time.h>
 #include <sys/mount.h>
-#include <ufs/ext2fs/ext2fs_dinode.h>
-#include <ufs/ext2fs/ext2fs.h>
+#include <fs/ext2fs/ext2_dinode.h>
+#include <fs/ext2fs/ext2fs.h>
+#include <fs/ext2fs/ext2_compat.h>
+#include <fs/ext2fs/ext2_mount.h>
 #include <fstab.h>
 #include <stdlib.h>
 #include <string.h>
@@ -65,6 +67,16 @@ struct bufarea *pdirbp;		/* current directory contents */
 struct bufarea *pbp;		/* current inode block */
 struct bufarea *getdatablk(daddr32_t, long);
 struct m_ext2fs sblock;
+
+/*
+ * Storage the in-core superblock's on-disk half points at.
+ *
+ * The shared m_ext2fs in <fs/ext2fs/ext2fs.h> reaches the on-disk superblock
+ * through a pointer where OpenBSD's embedded it outright, so sblock needs a
+ * buffer of its own. It is linked up in main() before anything can reach it -
+ * readsb() loads straight through sblock.e2fs.
+ */
+static struct ext2fs sblock_disk;
 
 struct dups *duplist;		/* head of dup list */
 struct dups *muldup;		/* end of unique duplicate dup block numbers */
@@ -107,6 +119,8 @@ main(int argc, char *argv[])
 {
 	int ch;
 	int ret = 0;
+
+	sblock.e2fs = &sblock_disk;
 
 	checkroot();
 
@@ -213,9 +227,9 @@ checkfilesys(char *filesys, char *mntpt, long auxdata, int child)
 	 * 1: scan inodes tallying blocks used
 	 */
 	if (preen == 0) {
-		if (sblock.e2fs.e2fs_rev > E2FS_REV0) {
+		if (sblock.e2fs->e2fs_rev > E2FS_REV0) {
 			printf("** Last Mounted on %s\n",
-			    sblock.e2fs.e2fs_fsmnt);
+			    sblock.e2fs->e2fs_fsmnt);
 		}
 		if (hotroot())
 			printf("** Root file system\n");
@@ -264,18 +278,18 @@ checkfilesys(char *filesys, char *mntpt, long auxdata, int child)
 	/*
 	 * print out summary statistics
 	 */
-	n_bfree = sblock.e2fs.e2fs_fbcount;
+	n_bfree = sblock.e2fs->e2fs_fbcount;
 
 	pwarn("%d files, %d used, %d free\n",
 	    n_files, n_blks, n_bfree);
 	if (debug &&
 		/* 9 reserved and unused inodes in FS */
-	    (n_files -= maxino - 9 - sblock.e2fs.e2fs_ficount))
+	    (n_files -= maxino - 9 - sblock.e2fs->e2fs_ficount))
 		printf("%d files missing\n", n_files);
 	if (debug) {
-		for (i = 0; i < sblock.e2fs_ncg; i++)
+		for (i = 0; i < sblock.e2fs_gcount; i++)
 			n_blks +=  cgoverhead(i);
-		n_blks += sblock.e2fs.e2fs_first_dblock;
+		n_blks += sblock.e2fs->e2fs_first_dblock;
 		if (n_blks -= maxfsblock - n_bfree)
 			printf("%d blocks missing\n", n_blks);
 		if (duplist != NULL) {
@@ -299,8 +313,8 @@ checkfilesys(char *filesys, char *mntpt, long auxdata, int child)
 	if (fsmodified) {
 		time_t t;
 		(void)time(&t);
-		sblock.e2fs.e2fs_wtime = t;
-		sblock.e2fs.e2fs_lastfsck = t;
+		sblock.e2fs->e2fs_wtime = t;
+		sblock.e2fs->e2fs_lastfsck = t;
 		sbdirty();
 	}
 	ckfini(1);
@@ -321,15 +335,21 @@ checkfilesys(char *filesys, char *mntpt, long auxdata, int child)
 		 */
 		if (statfs("/", &stfs_buf) == 0) {
 			long flags = stfs_buf.f_flags;
-			struct ufs_args args;
+			struct ext2_args args;
 			int ret;
 
 			if (flags & MNT_RDONLY) {
-				args.fspec = 0;
-				args.export_info.ex_flags = 0;
-				args.export_info.ex_root = 0;
+				/*
+				 * struct ufs_args and its export_args do not
+				 * exist on macOS; exports are nfsd's business,
+				 * not the mount call's. The file system's own
+				 * argument block is used instead.
+				 */
+				memset(&args, 0, sizeof(args));
+				args.e2_version = EXT2_ARGSVERSION;
 				flags |= MNT_UPDATE | MNT_RELOAD;
-				ret = mount(MOUNT_EXT2FS, "/", flags, &args);
+				ret = mount(MOUNT_EXT2FS, "/", (int)flags,
+				    &args);
 				if (ret == 0)
 					return(0);
 			}

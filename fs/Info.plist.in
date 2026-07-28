@@ -32,8 +32,9 @@
 	    Media that diskarbitrationd should offer to this file system. Each entry
 	    names the probe binary that decides whether the media really holds an
 	    ext2 superblock; FSProbeOrder breaks ties when more than one file system
-	    claims the same content hint, lowest running first. Paths are relative
-	    to the personality directory inside the bundle, hence the leading ../..
+	    claims the same content hint, lowest running first. Executables are
+	    named without a path: diskarbitrationd resolves them inside the
+	    bundle's Contents/Resources, which is where the build stages them.
 	-->
 	<key>FSMediaTypes</key>
 	<dict>
@@ -50,7 +51,7 @@
 			<key>FSProbeArguments</key>
 			<string>-p</string>
 			<key>FSProbeExecutable</key>
-			<string>../../__FSNAME__.util</string>
+			<string>__FSNAME__.util</string>
 			<key>FSProbeOrder</key>
 			<integer>1000</integer>
 		</dict>
@@ -67,7 +68,7 @@
 			<key>FSProbeArguments</key>
 			<string>-p</string>
 			<key>FSProbeExecutable</key>
-			<string>../../__FSNAME__.util</string>
+			<string>__FSNAME__.util</string>
 			<key>FSProbeOrder</key>
 			<integer>1000</integer>
 		</dict>
@@ -84,7 +85,7 @@
 			<key>FSProbeArguments</key>
 			<string>-p</string>
 			<key>FSProbeExecutable</key>
-			<string>../../__FSNAME__.util</string>
+			<string>__FSNAME__.util</string>
 			<key>FSProbeOrder</key>
 			<integer>2000</integer>
 		</dict>
@@ -104,7 +105,7 @@
 			<key>FSProbeArguments</key>
 			<string>-p</string>
 			<key>FSProbeExecutable</key>
-			<string>../../__FSNAME__.util</string>
+			<string>__FSNAME__.util</string>
 			<key>FSProbeOrder</key>
 			<integer>5000</integer>
 		</dict>
@@ -122,17 +123,17 @@
 			<key>FSFormatArguments</key>
 			<string>-F</string>
 			<key>FSFormatExecutable</key>
-			<string>../../../../../../usr/local/sbin/newfs___FSNAME__</string>
+			<string>newfs___FSNAME__</string>
 			<key>FSFormatMinimumSize</key>
 			<integer>524288</integer>
 			<key>FSRepairArguments</key>
 			<string>-y</string>
 			<key>FSRepairExecutable</key>
-			<string>../../../../../../usr/local/sbin/fsck___FSNAME__</string>
+			<string>fsck___FSNAME__</string>
 			<key>FSVerificationArguments</key>
 			<string>-q</string>
 			<key>FSVerificationExecutable</key>
-			<string>../../../../../../usr/local/sbin/fsck___FSNAME__</string>
+			<string>fsck___FSNAME__</string>
 		</dict>
 	</dict>
 	<key>OSBundleLibraries</key>

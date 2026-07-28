@@ -1,10 +1,41 @@
-# $OpenBSD: Makefile,v 1.3 2014/07/13 16:44:20 pelikan Exp $
+#
+# newfs_ext2fs - create an ext2 file system
+#
+# Converted from the OpenBSD bsd.prog.mk build. Upstream pulled ext2fs_bswap.c
+# in through .PATH; that is unnecessary here because <fs/ext2fs/ext2fs.h> and
+# ext2_compat.h already resolve the byte order macros for little-endian hosts.
+#
+
+include ../Makefile.inc
+
 PROG=	newfs_ext2fs
-SRCS=	newfs_ext2fs.c mke2fs.c ext2fs_bswap.c
 MAN=	newfs_ext2fs.8
 
-.PATH:	${.CURDIR}/../../sys/ufs/ext2fs
-DPADD+= ${LIBUTIL}
-LDADD+= -lutil
+SRCS=	newfs_ext2fs.c mke2fs.c
 
-.include <bsd.prog.mk>
+OBJS=	$(SRCS:.c=.o)
+
+CFLAGS+= -I.
+LIBS+=   -lutil
+
+all: debug
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(PROG): $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LIBS)
+
+debug: $(PROG)
+release: $(PROG)
+
+install: $(PROG)
+	install -d "$(PREFIX)"
+	install -m 755 $(PROG) "$(PREFIX)/$(PROG)"
+	install -d "$(MANPREFIX)/man8"
+	install -m 644 $(MAN) "$(MANPREFIX)/man8/$(MAN)"
+
+clean:
+	rm -f $(PROG) $(OBJS)
+
+.PHONY: all debug release install clean

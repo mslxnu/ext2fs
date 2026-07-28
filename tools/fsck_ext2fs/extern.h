@@ -39,7 +39,7 @@ int	chkrange(daddr32_t, int);
 void	ckfini(int);
 int	ckinode(struct ext2fs_dinode *, struct inodesc *);
 void	clri(struct inodesc *, char *, int);
-int	dircheck(struct inodesc *, struct ext2fs_direct *);
+int	dircheck(struct inodesc *, struct ext2fs_direct_2 *);
 void	direrror(ino_t, char *);
 int	dirscan(struct inodesc *);
 int	dofix(struct inodesc *, char *);

@@ -85,8 +85,6 @@ kextfs:
 	$(MAKE) -C fs clean
 	$(MAKE) -C lib all clean
 	$(MAKE) -C lib  ARCHFLAGS="-arch x86_64" TARGET_TRIPLE="x86_64-apple-macos10.15"
-	$(MAKE) -C vendor all clean
-	$(MAKE) -C vendor  ARCHFLAGS="-arch x86_64" TARGET_TRIPLE="x86_64-apple-macos10.15"
 	$(MAKE) debug -C kext ARCHFLAGS="-arch x86_64" TARGET_TRIPLE="x86_64-apple-macos10.15"
 	$(MAKE) debug -C fs   ARCHFLAGS="-arch x86_64" TARGET_TRIPLE="x86_64-apple-macos10.15"
 	rm -rf $(OUT)/ext2fs.kext.dSYM $(OUT)/ext2fs.fs.dSYM
@@ -116,9 +114,28 @@ kextfs:
 
 endif
 
+# Build the tools and stage them inside the .fs bundle. diskarbitrationd
+# resolves FSProbeExecutable / FSMountExecutable / FSFormatExecutable /
+# FSRepairExecutable against Contents/Resources, so that is where they have to
+# end up; mount_ext2fs is already put there by the fs/ build. Copies are also
+# kept in $(OUT) for install-tools to place in $(SBIN_DIR), so that newfs and
+# fsck are usable from a shell.
 tools:
 	@mkdir -p $(OUT)
 	$(MAKE) -C tools
+	@if [ -d "$(OUT)/ext2fs.fs/Contents/Resources" ]; then \
+		for t in tools/newfs_ext2fs/newfs_ext2fs \
+		         tools/fsck_ext2fs/fsck_ext2fs \
+		         tools/ext2fs.util/ext2fs.util; do \
+			echo "    stage $$t -> $(OUT)/ext2fs.fs/Contents/Resources"; \
+			cp "$$t" "$(OUT)/ext2fs.fs/Contents/Resources/"; \
+		done; \
+		codesign --force --timestamp=none --sign - $(OUT)/ext2fs.fs; \
+	else \
+		echo "==> $(OUT)/ext2fs.fs missing; run 'make kextfs' first"; \
+		exit 1; \
+	fi
+	@cp tools/newfs_ext2fs/newfs_ext2fs tools/fsck_ext2fs/fsck_ext2fs $(OUT)/
 
 # Test programs (not part of the default build).
 tests:
@@ -183,6 +200,9 @@ postinstall:
 # Clean  (never needs sudo: the build never produces root-owned files)
 # ---------------------------------------------------------------------------
 
+# vendor/ is not recursed into: libutil and diskdev_cmds are Apple Xcode
+# projects with no GNU makefile, and nothing links them any more. The tree uses
+# vendor/libutil only as an include path, for mntopts.h.
 clean:
 	rm -rf $(OUT)
 	$(MAKE) -C kext clean
@@ -190,7 +210,6 @@ clean:
 	$(MAKE) -C lib clean
 	$(MAKE) -C tests clean
 	$(MAKE) -C tools clean
-	$(MAKE) -C vendor clean
 
 .PHONY: all kextfs tools tests check distcheck debug release \
         install preinstall install-kext install-fs install-tools \

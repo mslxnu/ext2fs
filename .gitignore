@@ -66,3 +66,8 @@ Info.plist~
 *.out
 *.fs
 **/*.fs
+
+# Tool binaries (no extension, so the patterns above miss them)
+tools/newfs_ext2fs/newfs_ext2fs
+tools/fsck_ext2fs/fsck_ext2fs
+tools/ext2fs.util/ext2fs.util

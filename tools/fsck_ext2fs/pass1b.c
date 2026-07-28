@@ -32,8 +32,9 @@
  */
 
 #include <sys/time.h>
-#include <ufs/ext2fs/ext2fs_dinode.h>
-#include <ufs/ext2fs/ext2fs.h>
+#include <fs/ext2fs/ext2_dinode.h>
+#include <fs/ext2fs/ext2fs.h>
+#include <fs/ext2fs/ext2_compat.h>
 
 #include <string.h>
 #include "fsck.h"
@@ -55,8 +56,8 @@ pass1b(void)
 	idesc.id_func = pass1bcheck;
 	duphead = duplist;
 	inumber = 0;
-	for (c = 0; c < sblock.e2fs_ncg; c++) {
-		for (i = 0; i < sblock.e2fs.e2fs_ipg; i++, inumber++) {
+	for (c = 0; c < sblock.e2fs_gcount; c++) {
+		for (i = 0; i < sblock.e2fs->e2fs_ipg; i++, inumber++) {
 			if ((inumber < EXT2_FIRSTINO) && (inumber != EXT2_ROOTINO))
 				continue;
 			dp = ginode(inumber);

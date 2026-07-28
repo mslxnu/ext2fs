@@ -33,9 +33,9 @@
 
 #include <sys/param.h>	/* setbit isset */
 #include <sys/time.h>
-#include <ufs/ufs/dinode.h>
-#include <ufs/ext2fs/ext2fs_dinode.h>
-#include <ufs/ext2fs/ext2fs.h>
+#include <fs/ext2fs/ext2_dinode.h>
+#include <fs/ext2fs/ext2fs.h>
+#include <fs/ext2fs/ext2_compat.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -71,13 +71,13 @@ pass5(void)
 		errexit("out of memory\n");
 	}
 
-	for (c = 0; c < fs->e2fs_ncg; c++) {
+	for (c = 0; c < fs->e2fs_gcount; c++) {
 		u_int32_t nbfree = 0;
 		u_int32_t nifree = 0;
 		u_int32_t ndirs = 0;
 
 		nbfree = 0;
-		nifree = fs->e2fs.e2fs_ipg;
+		nifree = fs->e2fs->e2fs_ipg;
 		ndirs = 0;
 
 		if (blk_bitmap == NULL) {
@@ -101,15 +101,15 @@ pass5(void)
 			idesc[i].id_type = ADDR;
 		}
 
-		j = fs->e2fs.e2fs_ipg * c + 1;
+		j = fs->e2fs->e2fs_ipg * c + 1;
 
-		for (i = 0; i < fs->e2fs.e2fs_ipg; j++, i++) {
+		for (i = 0; i < fs->e2fs->e2fs_ipg; j++, i++) {
 			if ((j < EXT2_FIRSTINO) && (j != EXT2_ROOTINO)) {
 				setbit(ibmap, i);
 				nifree--;
 				continue;
 			}
-			if (j > fs->e2fs.e2fs_icount) {
+			if (j > fs->e2fs->e2fs_icount) {
 				setbit(ibmap, i);
 				continue;
 			}
@@ -137,18 +137,18 @@ pass5(void)
 		}
 
 		/* fill in unused par of the inode map */
-		for (i = fs->e2fs.e2fs_ipg / NBBY; i < fs->e2fs_bsize; i++)
+		for (i = fs->e2fs->e2fs_ipg / NBBY; i < fs->e2fs_bsize; i++)
 			ibmap[i] = 0xff;
 
-		dbase = c * sblock.e2fs.e2fs_bpg +
-		    sblock.e2fs.e2fs_first_dblock;
-		dmax = (c+1) * sblock.e2fs.e2fs_bpg +
-		    sblock.e2fs.e2fs_first_dblock;
+		dbase = c * sblock.e2fs->e2fs_bpg +
+		    sblock.e2fs->e2fs_first_dblock;
+		dmax = (c+1) * sblock.e2fs->e2fs_bpg +
+		    sblock.e2fs->e2fs_first_dblock;
 
 		for (i = 0, d = dbase;
 		     d < dmax;
 		     d ++, i ++) {
-			if (testbmap(d) || d >= sblock.e2fs.e2fs_bcount) {
+			if (testbmap(d) || d >= sblock.e2fs->e2fs_bcount) {
 				setbit(bbmap, i);
 				continue;
 			} else {
@@ -213,17 +213,17 @@ pass5(void)
 		}
 
 	}
-	if (debug && (fs->e2fs.e2fs_fbcount != cs_nbfree ||
-		fs->e2fs.e2fs_ficount != cs_nifree)) {
+	if (debug && (fs->e2fs->e2fs_fbcount != cs_nbfree ||
+		fs->e2fs->e2fs_ficount != cs_nifree)) {
 		printf("summary info bad in superblock: %d, %d should be %d, %d\n",
-		fs->e2fs.e2fs_fbcount, fs->e2fs.e2fs_ficount,
+		fs->e2fs->e2fs_fbcount, fs->e2fs->e2fs_ficount,
 		cs_nbfree, cs_nifree);
 	}
-	if ((fs->e2fs.e2fs_fbcount != cs_nbfree ||
-		fs->e2fs.e2fs_ficount != cs_nifree)
+	if ((fs->e2fs->e2fs_fbcount != cs_nbfree ||
+		fs->e2fs->e2fs_ficount != cs_nifree)
 	    && dofix(&idesc[0], "SUPERBLK SUMMARY INFORMATION BAD")) {
-		fs->e2fs.e2fs_fbcount = cs_nbfree;
-		fs->e2fs.e2fs_ficount = cs_nifree;
+		fs->e2fs->e2fs_fbcount = cs_nbfree;
+		fs->e2fs->e2fs_ficount = cs_nifree;
 		sbdirty();
 	}
 	free(ibmap);

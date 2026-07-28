@@ -33,11 +33,11 @@
 
 #include <sys/param.h>	/* btodb */
 #include <sys/time.h>
-#include <ufs/ext2fs/ext2fs_dinode.h>
-#include <ufs/ext2fs/ext2fs_dir.h>
-#include <ufs/ext2fs/ext2fs.h>
+#include <fs/ext2fs/ext2_dinode.h>
+#include <fs/ext2fs/ext2_dir.h>
+#include <fs/ext2fs/ext2fs.h>
+#include <fs/ext2fs/ext2_compat.h>
 
-#include <ufs/ufs/dinode.h> /* for IFMT & friends */
 #ifndef SMALL
 #include <pwd.h>
 #endif
@@ -50,6 +50,7 @@
 #include "fsck.h"
 #include "fsutil.h"
 #include "extern.h"
+#include "bsdcompat.h"
 
 /*
  * CG is stored in fs byte order in memory, so we can't use ino_to_fsba
@@ -58,7 +59,7 @@
 
 #define fsck_ino_to_fsba(fs, x) \
 	(letoh32((fs)->e2fs_gd[ino_to_cg(fs, x)].ext2bgd_i_tables) + \
-	(((x)-1) % (fs)->e2fs.e2fs_ipg)/(fs)->e2fs_ipb)
+	(((x)-1) % (fs)->e2fs->e2fs_ipg)/(fs)->e2fs_ipb)
 
 static ino_t startinum;
 
@@ -68,16 +69,16 @@ static int setlarge(void);
 static int
 setlarge(void)
 {
-	if (sblock.e2fs.e2fs_rev < E2FS_REV1) {
+	if (sblock.e2fs->e2fs_rev < E2FS_REV1) {
 		pfatal("LARGE FILES UNSUPPORTED ON REVISION 0 FILESYSTEMS");
 		return 0;
 	}
-	if (!(sblock.e2fs.e2fs_features_rocompat & EXT2F_ROCOMPAT_LARGE_FILE)) {
+	if (!(sblock.e2fs->e2fs_features_rocompat & EXT2F_ROCOMPAT_LARGE_FILE)) {
 		if (preen)
 			pwarn("SETTING LARGE FILE INDICATOR\n");
 		else if (!reply("SET LARGE FILE INDICATOR"))
 			return 0;
-		sblock.e2fs.e2fs_features_rocompat |= EXT2F_ROCOMPAT_LARGE_FILE;
+		sblock.e2fs->e2fs_features_rocompat |= EXT2F_ROCOMPAT_LARGE_FILE;
 		sbdirty();
 	}
 	return 1;
@@ -89,7 +90,7 @@ inosize(struct ext2fs_dinode *dp)
 	u_int64_t size = letoh32(dp->e2di_size);
 
 	if ((letoh16(dp->e2di_mode) & IFMT) == IFREG)
-		size |= (u_int64_t)letoh32(dp->e2di_size_hi) << 32;
+		size |= (u_int64_t)letoh32(dp->e2di_size_high) << 32;
 	if (size >= 0x80000000U)
 		 (void)setlarge();
 	return size;
@@ -99,7 +100,7 @@ void
 inossize(struct ext2fs_dinode *dp, u_int64_t size)
 {
 	if ((letoh16(dp->e2di_mode) & IFMT) == IFREG) {
-		dp->e2di_size_hi = htole32(size >> 32);
+		dp->e2di_size_high = htole32(size >> 32);
 		if (size >= 0x80000000U)
 			if (!setlarge())
 				return;
@@ -291,30 +292,30 @@ chkrange(daddr32_t blk, int cnt)
 		return (1);
 	c = dtog(&sblock, blk);
 	overh = cgoverhead(c);
-	if (blk < sblock.e2fs.e2fs_bpg * c + overh +
-	    sblock.e2fs.e2fs_first_dblock) {
-		if ((blk + cnt) > sblock.e2fs.e2fs_bpg * c + overh +
-		    sblock.e2fs.e2fs_first_dblock) {
+	if (blk < sblock.e2fs->e2fs_bpg * c + overh +
+	    sblock.e2fs->e2fs_first_dblock) {
+		if ((blk + cnt) > sblock.e2fs->e2fs_bpg * c + overh +
+		    sblock.e2fs->e2fs_first_dblock) {
 			if (debug) {
 				printf("blk %d < cgdmin %d;",
-				    blk, sblock.e2fs.e2fs_bpg * c + overh +
-				    sblock.e2fs.e2fs_first_dblock);
+				    blk, sblock.e2fs->e2fs_bpg * c + overh +
+				    sblock.e2fs->e2fs_first_dblock);
 				printf(" blk + cnt %d > cgsbase %d\n",
-				    blk + cnt, sblock.e2fs.e2fs_bpg * c +
-				    overh + sblock.e2fs.e2fs_first_dblock);
+				    blk + cnt, sblock.e2fs->e2fs_bpg * c +
+				    overh + sblock.e2fs->e2fs_first_dblock);
 			}
 			return (1);
 		}
 	} else {
-		if ((blk + cnt) > sblock.e2fs.e2fs_bpg * (c + 1) + overh +
-		    sblock.e2fs.e2fs_first_dblock) {
+		if ((blk + cnt) > sblock.e2fs->e2fs_bpg * (c + 1) + overh +
+		    sblock.e2fs->e2fs_first_dblock) {
 			if (debug)  {
 				printf("blk %d >= cgdmin %d;",
-				    blk, sblock.e2fs.e2fs_bpg * c + overh +
-				    sblock.e2fs.e2fs_first_dblock);
+				    blk, sblock.e2fs->e2fs_bpg * c + overh +
+				    sblock.e2fs->e2fs_first_dblock);
 				printf(" blk + cnt %d > cgdmax %d\n",
-				    blk+cnt, sblock.e2fs.e2fs_bpg * (c + 1) +
-				    overh + sblock.e2fs.e2fs_first_dblock);
+				    blk+cnt, sblock.e2fs->e2fs_bpg * (c + 1) +
+				    overh + sblock.e2fs->e2fs_first_dblock);
 			}
 			return (1);
 		}
@@ -394,8 +395,8 @@ resetinodebuf(void)
 	readcnt = 0;
 	inobufsize = blkroundup(&sblock, INOBUFSIZE);
 	fullcnt = inobufsize / EXT2_DINODE_SIZE(&sblock);
-	readpercg = sblock.e2fs.e2fs_ipg / fullcnt;
-	partialcnt = sblock.e2fs.e2fs_ipg % fullcnt;
+	readpercg = sblock.e2fs->e2fs_ipg / fullcnt;
+	partialcnt = sblock.e2fs->e2fs_ipg % fullcnt;
 	partialsize = partialcnt * EXT2_DINODE_SIZE(&sblock);
 	if (partialcnt != 0) {
 		readpercg++;
@@ -528,7 +529,7 @@ clri(struct inodesc *idesc, char *type, int flag)
 int
 findname(struct inodesc *idesc)
 {
-	struct ext2fs_direct *dirp = idesc->id_dirp;
+	struct ext2fs_direct_2 *dirp = idesc->id_dirp;
 	u_int16_t namlen = dirp->e2d_namlen;
 
 	if (letoh32(dirp->e2d_ino) != idesc->id_parent)
@@ -541,7 +542,7 @@ findname(struct inodesc *idesc)
 int
 findino(struct inodesc *idesc)
 {
-	struct ext2fs_direct *dirp = idesc->id_dirp;
+	struct ext2fs_direct_2 *dirp = idesc->id_dirp;
 	u_int32_t ino = letoh32(dirp->e2d_ino);
 
 	if (ino == 0)
@@ -568,7 +569,7 @@ pinode(ino_t ino)
 		return;
 	dp = ginode(ino);
 	printf(" OWNER=");
-	uid = letoh16(dp->e2di_uid_low) | (letoh16(dp->e2di_uid_high) << 16);
+	uid = letoh16(dp->e2di_uid) | (letoh16(dp->e2di_uid_high) << 16);
 #ifndef SMALL
 	if ((p = user_from_uid(uid, 1)) != NULL)
 		printf("%s ", p);

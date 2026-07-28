@@ -37,6 +37,18 @@
 #ifndef _FS_EXT2FS_EXT2FS_H_
 #define	_FS_EXT2FS_EXT2FS_H_
 
+/*
+ * Darwin: <sys/types.h> here does not publish the fixed-width names the way
+ * FreeBSD's does, so a userland consumer that includes this header first would
+ * see uint16_t and friends undeclared. The kext build compiles -nostdinc and
+ * gets them from the kernel headers instead, hence the guard.
+ */
+#if !defined(_KERNEL) && !defined(KERNEL)
+#include <stdint.h>
+#include <sys/types.h>
+#endif
+
+
 #include <sys/types.h>
 
 /*
@@ -106,7 +118,8 @@ struct ext2fs {
 	uint8_t   e4fs_log_gpf;	/* FLEX_BG group size */
 	uint8_t   e4fs_char_pad2;
 	uint16_t  e4fs_pad;
-	uint32_t  reserved2[162];	/* Padding to the end of the block */
+	uint64_t  e4fs_kbytes_written;	/* KiB written over the fs lifetime */
+	uint32_t  reserved2[160];	/* Padding to the end of the block */
 };
 
 /*

@@ -34,10 +34,10 @@
 #include <sys/param.h>	/* DEV_BSIZE isset setbit */
 #include <sys/time.h>
 #include <sys/signal.h>
-#include <ufs/ext2fs/ext2fs_dinode.h>
-#include <ufs/ext2fs/ext2fs_dir.h>
-#include <ufs/ext2fs/ext2fs.h>
-#include <ufs/ufs/dinode.h> /* for IFMT & friends */
+#include <fs/ext2fs/ext2_dinode.h>
+#include <fs/ext2fs/ext2_dir.h>
+#include <fs/ext2fs/ext2fs.h>
+#include <fs/ext2fs/ext2_compat.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -208,7 +208,7 @@ flush(int fd, struct bufarea *bp)
 	bwrite(fd, bp->b_un.b_buf, bp->b_bno, (long)bp->b_size);
 	if (bp != &sblk)
 		return;
-	for (i = 0; i < sblock.e2fs_ngdb; i++) {
+	for (i = 0; i < sblock.e2fs_gdbcount; i++) {
 		bwrite(fswritefd, (char *)
 			&sblock.e2fs_gd[i* sblock.e2fs_bsize / sizeof(struct ext2_gd)],
 		    fsbtodb(&sblock, ((sblock.e2fs_bsize>1024)?0:1)+i+1),
@@ -257,7 +257,7 @@ ckfini(int markclean)
 	if (bufhead.b_size != cnt)
 		errexit("Panic: lost %d buffers\n", bufhead.b_size - cnt);
 	pbp = pdirbp = NULL;
-	if (markclean && (sblock.e2fs.e2fs_state & E2FS_ISCLEAN) == 0) {
+	if (markclean && (sblock.e2fs->e2fs_state & E2FS_ISCLEAN) == 0) {
 		/*
 		 * Mark the file system as clean, and sync the superblock.
 		 */
@@ -266,7 +266,7 @@ ckfini(int markclean)
 		else if (!reply("MARK FILE SYSTEM CLEAN"))
 			markclean = 0;
 		if (markclean) {
-			sblock.e2fs.e2fs_state = E2FS_ISCLEAN;
+			sblock.e2fs->e2fs_state = E2FS_ISCLEAN;
 			sbdirty();
 			flush(fswritefd, &sblk);
 		}

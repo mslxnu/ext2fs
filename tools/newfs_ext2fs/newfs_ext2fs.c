@@ -36,12 +36,13 @@
 #include <sys/param.h>	/* powerof2 */
 #include <sys/types.h>
 #include <sys/ioctl.h>
-#include <sys/dkio.h>
-#include <sys/disklabel.h>
+#include <sys/disk.h>
 #include <sys/mount.h>
+#include <sys/stat.h>
 
-#include <ufs/ext2fs/ext2fs.h>
-#include <ufs/ext2fs/ext2fs_dinode.h>
+#include <fs/ext2fs/ext2fs.h>
+#include <fs/ext2fs/ext2_dinode.h>
+#include <fs/ext2fs/ext2_compat.h>
 
 #include <ctype.h>
 #include <err.h>
@@ -55,7 +56,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <util.h>
 
 #define MINIMUM(a, b)	(((a) < (b)) ? (a) : (b))
 
@@ -104,10 +104,18 @@ uint	num_inodes;		/* number of inodes (overrides density) */
 int	max_cols;
 char	*volname = NULL;	/* volume name */
 
-static char *disktype = NULL;
+/*
+ * Geometry of the device being formatted. OpenBSD reads this from the
+ * disklabel; macOS has no disklabel, so it comes from the two DKIOC ioctls
+ * every block device implements.
+ */
+struct devgeom {
+	uint32_t	dg_secsize;	/* bytes per sector */
+	uint64_t	dg_seccount;	/* sectors in the partition */
+};
 
-struct disklabel *getdisklabel(const char *, int);
-struct partition *getpartition(int, const char *, char *[], struct disklabel **);
+static int	getdevgeom(int, const char *, struct devgeom *);
+static int	opendisk(const char *, int, char **);
 
 int
 main(int argc, char *argv[])
@@ -119,8 +127,8 @@ main(int argc, char *argv[])
 	const char *opstring;
 	int byte_sized, fl;
 	uint blocks;			/* number of blocks */
-	struct partition *pp = NULL;
-	struct disklabel *lp;
+	struct devgeom geom;
+	int have_geom = 0;
 	struct winsize winsize;
 
 	/* Get terminal width */
@@ -129,8 +137,7 @@ main(int argc, char *argv[])
 	else
 		max_cols = 80;
 
-	if (pledge("stdio rpath wpath cpath disklabel", NULL) == -1)
-		err(1, "pledge");
+	/* pledge(2) is OpenBSD-only; macOS has no equivalent to drop into. */
 
 	Fflag = Iflag = Zflag = 0;
 	verbosity = -1;
@@ -246,7 +253,7 @@ main(int argc, char *argv[])
 		if (fstat(fd, &sb) == -1)
 			err(EXIT_FAILURE, "can't fstat opened %s", special);
 	} else {	/* !Fflag */
-		fd = opendev(special, fl, 0, &special);
+		fd = opendisk(special, fl, &special);
 		if (fd == -1 || fstat(fd, &sb) == -1)
 			err(EXIT_FAILURE, "%s: open", special);
 
@@ -276,15 +283,18 @@ main(int argc, char *argv[])
 			}
 		}
 
-		pp = getpartition(fd, special, argv, &lp);
-		if (!Iflag) {
-			static const char m[] =
-			    "%s partition type is not `%s' (or use -I)";
-			if (pp->p_fstype != FS_EXT2FS)
-				errx(EXIT_FAILURE, m, special, "ext2fs");
-		}
+		/*
+		 * A macOS partition carries no BSD file system type byte, so
+		 * there is nothing to check here and -I (ignore the type) is
+		 * accepted but redundant. Refusing to format a partition that
+		 * already holds something is diskutil's job, not ours.
+		 */
+		have_geom = getdevgeom(fd, special, &geom);
+		if (!have_geom)
+			errx(EXIT_FAILURE, "%s: can't determine device geometry",
+			    special);
 		if (sectorsize == 0) {
-			sectorsize = lp->d_secsize;
+			sectorsize = (int)geom.dg_secsize;
 			if (sectorsize <= 0)
 				errx(EXIT_FAILURE, "no default sector size");
 		}
@@ -295,8 +305,8 @@ main(int argc, char *argv[])
 	if (fssize <= 0) {
 		if (sb.st_size != 0)
 			fssize += sb.st_size / sectorsize;
-		else if (pp)
-			fssize += DL_GETPSIZE(pp);
+		else if (have_geom)
+			fssize += (int64_t)geom.dg_seccount;
 		if (fssize <= 0)
 			errx(EXIT_FAILURE,
 			    "Unable to determine file system size");
@@ -437,57 +447,80 @@ usage(void)
 	exit(EXIT_FAILURE);
 }
 
-struct disklabel *
-getdisklabel(const char *s, int fd)
+/*
+ * Open a disk device by name, preferring the raw (character) node.
+ *
+ * Replaces OpenBSD's opendev(3). Accepts "disk0s2", "/dev/disk0s2" or
+ * "/dev/rdisk0s2" and opens /dev/rdisk0s2, because writing a file system
+ * through the buffered node would fight the kernel's own cache of it. The
+ * name actually opened is stored back through namep for later error messages,
+ * matching what opendev(3) did.
+ */
+static int
+opendisk(const char *name, int flags, char **namep)
 {
-	static struct disklabel lab;
+	static char path[PATH_MAX];
+	const char *base;
+	int fd;
 
-	if (ioctl(fd, DIOCGDINFO, (char *)&lab) == -1) {
-		if (disktype != NULL) {
-			struct disklabel *lp;
-
-			//unlabeled++;
-			lp = getdiskbyname(disktype);
-			if (lp == NULL)
-				errx(EXIT_FAILURE, "%s: unknown disk type",
-				    disktype);
-			return (lp);
+	/* An explicit path is used as given, except that disk -> rdisk. */
+	if (name[0] == '/') {
+		base = strrchr(name, '/') + 1;
+		if (strncmp(base, "disk", 4) == 0) {
+			(void)snprintf(path, sizeof(path), "%.*sr%s",
+			    (int)(base - name), name, base);
+		} else {
+			(void)strlcpy(path, name, sizeof(path));
 		}
-		warn("ioctl (GDINFO)");
-		errx(EXIT_FAILURE,
-		    "%s: can't read disk label; disk type must be specified",
-		    s);
+	} else if (strncmp(name, "rdisk", 5) == 0) {
+		(void)snprintf(path, sizeof(path), "%s%s", _PATH_DEV, name);
+	} else {
+		(void)snprintf(path, sizeof(path), "%sr%s", _PATH_DEV, name);
 	}
-	return (&lab);
+
+	fd = open(path, flags);
+	if (fd == -1 && errno == ENOENT) {
+		/* Not a disk node after all - fall back to the literal name. */
+		(void)strlcpy(path, name, sizeof(path));
+		fd = open(path, flags);
+	}
+
+	if (fd != -1 && namep != NULL)
+		*namep = path;
+
+	return (fd);
 }
 
-struct partition *
-getpartition(int fsi, const char *special, char *argv[], struct disklabel **dl)
+/*
+ * Sector size and sector count of an open device.
+ *
+ * Stands in for reading the OpenBSD disklabel: DKIOCGETBLOCKSIZE and
+ * DKIOCGETBLOCKCOUNT report the same two numbers, and they are relative to the
+ * partition the node refers to, so no partition table walk is needed.
+ */
+static int
+getdevgeom(int fd, const char *special, struct devgeom *geom)
 {
 	struct stat st;
-	const char *cp;
-	struct disklabel *lp;
-	struct partition *pp;
 
-	if (fstat(fsi, &st) == -1)
+	if (fstat(fd, &st) == -1)
 		err(EXIT_FAILURE, "%s", special);
-	if (S_ISBLK(st.st_mode))
-		errx(EXIT_FAILURE, "%s: block device", special);
 	if (!S_ISCHR(st.st_mode))
 		warnx("%s: not a character-special device", special);
-	if (*argv[0] == '\0')
-		errx(EXIT_FAILURE, "empty partition name supplied");
-	cp = argv[0] + strlen(argv[0]) - 1;
-	if (DL_PARTNAME2NUM(*cp) == -1 && !isdigit((unsigned char)*cp))
-		errx(EXIT_FAILURE, "%s: can't figure out file system partition", argv[0]);
-	lp = getdisklabel(special, fsi);
-	if (isdigit((unsigned char)*cp))
-		pp = &lp->d_partitions[0];
-	else
-		pp = &lp->d_partitions[DL_PARTNAME2NUM(*cp)];
-	if (DL_GETPSIZE(pp) == 0) 
-		errx(EXIT_FAILURE, "%s: `%c' partition is unavailable", argv[0], *cp);
-	*dl = lp;
-	return pp;
+
+	if (ioctl(fd, DKIOCGETBLOCKSIZE, &geom->dg_secsize) == -1) {
+		warn("%s: DKIOCGETBLOCKSIZE", special);
+		return (0);
+	}
+	if (ioctl(fd, DKIOCGETBLOCKCOUNT, &geom->dg_seccount) == -1) {
+		warn("%s: DKIOCGETBLOCKCOUNT", special);
+		return (0);
+	}
+	if (geom->dg_secsize == 0 || geom->dg_seccount == 0) {
+		warnx("%s: device reports a zero-sized partition", special);
+		return (0);
+	}
+
+	return (1);
 }
 

@@ -25,9 +25,12 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-/* XXX should be in <sys/ufs/ext2fs.h> */
+/*
+ * EXT2_MAXBSIZE is what upstream's "XXX should be in <sys/ufs/ext2fs.h>" asked
+ * for: it now comes from <fs/ext2fs/ext2fs.h> as EXT2_MAX_BLOCK_SIZE, by way
+ * of ext2_compat.h. Only the log form is still defined locally.
+ */
 #define EXT2_LOG_MAXBSIZE	12
-#define EXT2_MAXBSIZE		(1 << EXT2_LOG_MAXBSIZE)
 
 #ifndef nitems
 #define nitems(_a)   (sizeof((_a)) / sizeof((_a)[0]))

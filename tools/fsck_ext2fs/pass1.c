@@ -33,11 +33,11 @@
 
 #include <sys/param.h>	/* setbit btodb isset */
 #include <sys/time.h>
-#include <ufs/ext2fs/ext2fs_dinode.h>
-#include <ufs/ext2fs/ext2fs_dir.h>
-#include <ufs/ext2fs/ext2fs.h>
+#include <fs/ext2fs/ext2_dinode.h>
+#include <fs/ext2fs/ext2_dir.h>
+#include <fs/ext2fs/ext2fs.h>
+#include <fs/ext2fs/ext2_compat.h>
 
-#include <ufs/ufs/dinode.h> /* for IFMT & friends */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,9 +63,9 @@ pass1(void)
 	/*
 	 * Set file system reserved blocks in used block map.
 	 */
-	for (c = 0; c < sblock.e2fs_ncg; c++) {
-		dbase = c * sblock.e2fs.e2fs_bpg +
-		    sblock.e2fs.e2fs_first_dblock;
+	for (c = 0; c < sblock.e2fs_gcount; c++) {
+		dbase = c * sblock.e2fs->e2fs_bpg +
+		    sblock.e2fs->e2fs_first_dblock;
 		/* Mark the blocks used for the inode table */
 		if (letoh32(sblock.e2fs_gd[c].ext2bgd_i_tables) >= dbase) {
 			for (i = 0; i < sblock.e2fs_itpg; i++)
@@ -80,13 +80,13 @@ pass1(void)
 		if (letoh32(sblock.e2fs_gd[c].ext2bgd_i_bitmap) >= dbase)
 			setbmap(letoh32(sblock.e2fs_gd[c].ext2bgd_i_bitmap));
 
-		if (sblock.e2fs.e2fs_rev == E2FS_REV0 ||
-		    (sblock.e2fs.e2fs_features_rocompat &
+		if (sblock.e2fs->e2fs_rev == E2FS_REV0 ||
+		    (sblock.e2fs->e2fs_features_rocompat &
 			EXT2F_ROCOMPAT_SPARSE_SUPER) == 0 ||
 		    cg_has_sb(c)) {
 			/* Mark copuy of SB and descriptors */
 			setbmap(dbase);
-			for (i = 1; i <= sblock.e2fs_ngdb; i++)
+			for (i = 1; i <= sblock.e2fs_gdbcount; i++)
 				setbmap(dbase+i);
 		}
 
@@ -106,9 +106,9 @@ pass1(void)
 	inumber = 1;
 	n_files = n_blks = 0;
 	resetinodebuf();
-	for (c = 0; c < sblock.e2fs_ncg; c++) {
+	for (c = 0; c < sblock.e2fs_gcount; c++) {
 		for (i = 0;
-			i < sblock.e2fs.e2fs_ipg && inumber <= sblock.e2fs.e2fs_icount;
+			i < sblock.e2fs->e2fs_ipg && inumber <= sblock.e2fs->e2fs_icount;
 			i++, inumber++) {
 			if (inumber < EXT2_ROOTINO) /* XXX */
 				continue;

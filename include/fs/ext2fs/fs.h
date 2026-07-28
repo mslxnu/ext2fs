@@ -102,7 +102,7 @@
 #define	dbtofsb(fs, b)	((b) >> (fs)->e2fs_fsbtodb)
 
 /* get group containing inode */
-#define	ino_to_cg(fs, x)	(((x) - 1) / (fs->e2fs_ipg))
+#define	ino_to_cg(fs, x)	(((x) - 1) / ((fs)->e2fs_ipg))
 
 /* get block containing inode from its number x */
 #define	ino_to_fsba(fs, x)                                              \
@@ -110,15 +110,15 @@
         (((x) - 1) % (fs)->e2fs->e2fs_ipg) / (fs)->e2fs_ipb)
 
 /* get offset for inode in block */
-#define	ino_to_fsbo(fs, x)	((x-1) % (fs->e2fs_ipb))
+#define	ino_to_fsbo(fs, x)	(((x) - 1) % ((fs)->e2fs_ipb))
 
 /*
  * Give cylinder group number for a file system block.
  * Give cylinder group block number for a file system block.
  */
-#define	dtog(fs, d)	(((d) - fs->e2fs->e2fs_first_dblock) / \
+#define	dtog(fs, d)	(((d) - (fs)->e2fs->e2fs_first_dblock) / \
 			EXT2_BLOCKS_PER_GROUP(fs))
-#define	dtogd(fs, d)	(((d) - fs->e2fs->e2fs_first_dblock) % \
+#define	dtogd(fs, d)	(((d) - (fs)->e2fs->e2fs_first_dblock) % \
 			EXT2_BLOCKS_PER_GROUP(fs))
 
 /*
@@ -130,14 +130,14 @@
 	((loc) & (fs)->e2fs_qbmask)
 
 #define	lblktosize(fs, blk)	/* calculates (blk * fs->fs_bsize) */ \
-	((blk) << (fs->e2fs_bshift))
+	((blk) << ((fs)->e2fs_bshift))
 
 #define	lblkno(fs, loc)		/* calculates (loc / fs->fs_bsize) */ \
-	((loc) >> (fs->e2fs_bshift))
+	((loc) >> ((fs)->e2fs_bshift))
 
 /* no fragments -> logical block number equal # of frags */
 #define	numfrags(fs, loc)	/* calculates (loc / fs->fs_fsize) */ \
-	((loc) >> (fs->e2fs_bshift))
+	((loc) >> ((fs)->e2fs_bshift))
 
 #define	fragroundup(fs, size)	/* calculates roundup(size, fs->fs_fsize) */ \
 	roundup(size, fs->e2fs_fsize)
@@ -152,7 +152,7 @@
 /*
  * INOPB is the number of inodes in a secondary storage block.
  */
-#define	INOPB(fs)	(fs->e2fs_ipb)
+#define	INOPB(fs)	((fs)->e2fs_ipb)
 
 /*
  * NINDIR is the number of indirects in a file system block.

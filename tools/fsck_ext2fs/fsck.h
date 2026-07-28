@@ -97,7 +97,7 @@ struct inodesc {
 	quad_t id_filesize;	/* for DATA nodes, the size of the directory */
 	int id_loc;		/* for DATA nodes, current location in dir */
 	int id_entryno;		/* for DATA nodes, current entry number */
-	struct ext2fs_direct *id_dirp;	/* for DATA nodes, ptr to current entry */
+	struct ext2fs_direct_2 *id_dirp;	/* for DATA nodes, ptr to current entry */
 	char *id_name;		/* for DATA nodes, name to find or enter */
 	char id_type;		/* type of descriptor, DATA or ADDR */
 };
