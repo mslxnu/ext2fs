@@ -72,7 +72,7 @@ struct ext4_extent_header {
  * Save cached extent.
  */
 struct ext4_extent_cache {
-	daddr_t	ec_start;	/* extent start */
+	daddr64_t	ec_start;	/* extent start */
 	uint32_t ec_blk;	/* logical block */
 	uint32_t ec_len;
 	uint32_t ec_type;
@@ -83,7 +83,7 @@ struct ext4_extent_cache {
  */
 struct ext4_extent_path {
 	uint16_t ep_depth;
-	struct buf *ep_bp;
+	buf_t ep_bp;
 	struct ext4_extent *ep_ext;
 	struct ext4_extent_index *ep_index;
 	struct ext4_extent_header *ep_header;
@@ -91,9 +91,9 @@ struct ext4_extent_path {
 
 struct inode;
 struct m_ext2fs;
-int	ext4_ext_in_cache(struct inode *, daddr_t, struct ext4_extent *);
+int	ext4_ext_in_cache(struct inode *, daddr64_t, struct ext4_extent *);
 void	ext4_ext_put_cache(struct inode *, struct ext4_extent *, int);
 struct ext4_extent_path *ext4_ext_find_extent(struct m_ext2fs *fs,
-    struct inode *, daddr_t, struct ext4_extent_path *);
+    struct inode *, daddr64_t, struct ext4_extent_path *);
 
 #endif /* !_FS_EXT2FS_EXT2_EXTENTS_H_ */

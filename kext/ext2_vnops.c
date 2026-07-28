@@ -1330,7 +1330,7 @@ ext2_strategy(struct vop_strategy_args *ap)
 	struct buf *bp = ap->a_bp;
 	struct vnode *vp = ap->a_vp;
 	struct bufobj *bo;
-	daddr_t blkno;
+	daddr64_t blkno;
 	int error;
 
 	if (vp->v_type == VBLK || vp->v_type == VCHR)
@@ -1634,7 +1634,7 @@ ext2_ind_read(struct vop_read_args *ap)
 	struct uio *uio;
 	struct m_ext2fs *fs;
 	struct buf *bp;
-	daddr_t lbn, nextlbn;
+	daddr64_t lbn, nextlbn;
 	off_t bytesinfile;
 	long size, xfersize, blkoffset;
 	int error, orig_resid, seqcount;
@@ -1794,7 +1794,7 @@ ext4_ext_read(struct vop_read_args *ap)
 	struct buf *bp;
 	struct ext4_extent nex, *ep;
 	struct ext4_extent_path path;
-	daddr_t lbn, newblk;
+	daddr64_t lbn, newblk;
 	off_t bytesinfile;
 	int cache_type;
 	ssize_t orig_resid;
@@ -1838,7 +1838,7 @@ ext4_ext_read(struct vop_read_args *ap)
 			ext4_ext_put_cache(ip, ep, EXT4_EXT_CACHE_IN);
 
 			newblk = lbn - ep->e_blk + (ep->e_start_lo |
-			    (daddr_t)ep->e_start_hi << 32);
+			    (daddr64_t)ep->e_start_hi << 32);
 
 			if (path.ep_bp != NULL) {
 				brelse(path.ep_bp);
@@ -1852,7 +1852,7 @@ ext4_ext_read(struct vop_read_args *ap)
 
 		case EXT4_EXT_CACHE_IN:
 			newblk = lbn - nex.e_blk + (nex.e_start_lo |
-			    (daddr_t)nex.e_start_hi << 32);
+			    (daddr64_t)nex.e_start_hi << 32);
 			break;
 
 		default:
@@ -1893,7 +1893,7 @@ ext2_write(struct vop_write_args *ap)
 	struct inode *ip;
 	struct m_ext2fs *fs;
 	struct buf *bp;
-	daddr_t lbn;
+	daddr64_t lbn;
 	off_t osize;
 	int blkoffset, error, flags, ioflag, resid, size, seqcount, xfersize;
 

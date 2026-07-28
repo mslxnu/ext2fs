@@ -40,7 +40,6 @@
 
 #include <sys/proc.h>
 #include <sys/systm.h>
-#include <sys/bio.h>
 #include <sys/buf.h>
 #include <sys/lock.h>
 #include <sys/ucred.h>
@@ -53,6 +52,7 @@
 #include <fs/ext2fs/ext2_extents.h>
 #include <fs/ext2fs/ext2_mount.h>
 #include <fs/ext2fs/ext2_dinode.h>
+#include <fs/ext2fs/ext2_apple.h>
 
 /*
  * Return buffer with the contents of block "offset" from the beginning of
@@ -60,14 +60,14 @@
  * remaining space in the directory.
  */
 int
-ext2_blkatoff(struct vnode *vp, off_t offset, char **res, struct buf **bpp)
+ext2_blkatoff(struct vnode *vp, off_t offset, char **res, buf_t *bpp)
 {
 	struct inode *ip;
 	struct m_ext2fs *fs;
-	struct buf *bp;
+	buf_t bp;
 	e2fs_lbn_t lbn;
 	int bsize, error;
-	daddr_t newblk;
+	daddr64_t newblk;
 	struct ext4_extent *ep;
 	struct ext4_extent_path path;
 
@@ -92,35 +92,49 @@ ext2_blkatoff(struct vnode *vp, off_t offset, char **res, struct buf **bpp)
 		goto normal;
 
 	newblk = lbn - ep->e_blk +
-	    (ep->e_start_lo | (daddr_t)ep->e_start_hi << 32);
+	    (ep->e_start_lo | (daddr64_t)ep->e_start_hi << 32);
 
 	if (path.ep_bp != NULL) {
-		brelse(path.ep_bp);
+		buf_brelse(path.ep_bp);
 		path.ep_bp = NULL;
 	}
-	error = bread(ip->i_devvp, fsbtodb(fs, newblk), bsize, NOCRED, &bp);
+	/*
+	 * Directory and extent blocks are metadata, so they go through
+	 * buf_meta_bread rather than buf_bread: the latter would back the
+	 * buffer with the UBC page cache, which only files may use.
+	 *
+	 * buf_meta_bread can hand back a buffer along with an error, and the
+	 * caller owns it either way, hence the release before returning.
+	 */
+	error = buf_meta_bread(ip->i_devvp, (daddr64_t)fsbtodb(fs, newblk),
+	    bsize, NOCRED, &bp);
 	if (error != 0) {
-		brelse(bp);
+		if (bp != NULL)
+			buf_brelse(bp);
 		return (error);
 	}
 	if (res)
-		*res = (char *)bp->b_data + blkoff(fs, offset);
+		*res = (char *)buf_dataptr(bp) + blkoff(fs, offset);
 	/*
-	 * If IN_E4EXTENTS is enabled we would get a wrong offset so
-	 * reset b_offset here.
+	 * This block was read through the device vnode by physical address, so
+	 * the buffer's logical block number describes the wrong thing. Reset it
+	 * to the file-relative block the caller asked for. (FreeBSD adjusts
+	 * b_offset here; XNU's equivalent is the logical block number.)
 	 */
-	bp->b_offset = lbn * bsize;
+	buf_setlblkno(bp, lbn);
 	*bpp = bp;
 	return (0);
 
 normal:
 	if (*bpp == NULL) {
-		if ((error = bread(vp, lbn, bsize, NOCRED, &bp)) != 0) {
-			brelse(bp);
+		error = buf_meta_bread(vp, (daddr64_t)lbn, bsize, NOCRED, &bp);
+		if (error != 0) {
+			if (bp != NULL)
+				buf_brelse(bp);
 			return (error);
 		}
 		if (res)
-			*res = (char *)bp->b_data + blkoff(fs, offset);
+			*res = (char *)buf_dataptr(bp) + blkoff(fs, offset);
 		*bpp = bp;
 	}
 	return (0);
@@ -131,8 +145,19 @@ normal:
  *
  * Cnt == 1 means free; cnt == -1 means allocating.
  */
+/*
+ * The e2fs_fpg comparisons below are cast to int deliberately. Fragments per
+ * group is unsigned on disk but bounded by 8 * blocksize, so at most 32768 for
+ * ext2's largest block; the loop counters are int and the narrowing is exact.
+ * Without the cast the int operand is promoted to unsigned and the backward
+ * scan below, which walks i down past zero, would compare wrongly.
+ *
+ * bno is narrowed to int for the same reason: it is a block number relative to
+ * the start of a cylinder group, so it shares that bound even though the type
+ * is now 64 bits wide.
+ */
 void
-ext2_clusteracct(struct m_ext2fs *fs, char *bbp, int cg, daddr_t bno, int cnt)
+ext2_clusteracct(struct m_ext2fs *fs, char *bbp, int cg, daddr64_t bno, int cnt)
 {
 	int32_t *sump = fs->e2fs_clustersum[cg].cs_sum;
 	int32_t *lp;
@@ -144,7 +169,7 @@ ext2_clusteracct(struct m_ext2fs *fs, char *bbp, int cg, daddr_t bno, int cnt)
 		bit = 1;
 		loc = 0;
 
-		for (i = 0; i < fs->e2fs->e2fs_fpg; i++) {
+		for (i = 0; i < (int)fs->e2fs->e2fs_fpg; i++) {
 			if ((bbp[loc] & bit) == 0)
 				run++;
 			else if (run != 0) {
@@ -172,10 +197,10 @@ ext2_clusteracct(struct m_ext2fs *fs, char *bbp, int cg, daddr_t bno, int cnt)
 		return;
 
 	/* Find the size of the cluster going forward. */
-	start = bno + 1;
+	start = (int)bno + 1;
 	end = start + fs->e2fs_contigsumsize;
-	if (end > fs->e2fs->e2fs_fpg)
-		end = fs->e2fs->e2fs_fpg;
+	if (end > (int)fs->e2fs->e2fs_fpg)
+		end = (int)fs->e2fs->e2fs_fpg;
 	loc = start / NBBY;
 	bit = 1 << (start % NBBY);
 	for (i = start; i < end; i++) {
@@ -191,7 +216,7 @@ ext2_clusteracct(struct m_ext2fs *fs, char *bbp, int cg, daddr_t bno, int cnt)
 	forw = i - start;
 
 	/* Find the size of the cluster going backward. */
-	start = bno - 1;
+	start = (int)bno - 1;
 	end = start - fs->e2fs_contigsumsize;
 	if (end < 0)
 		end = -1;

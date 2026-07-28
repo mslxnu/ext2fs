@@ -62,7 +62,7 @@ static int ext4_bmapext(struct vnode *, int32_t, int64_t *, int *, int *);
 int
 ext2_bmap(struct vop_bmap_args *ap)
 {
-	daddr_t blkno;
+	daddr64_t blkno;
 	int error;
 
 	/*
@@ -95,7 +95,7 @@ ext4_bmapext(struct vnode *vp, int32_t bn, int64_t *bnp, int *runp, int *runb)
 	struct m_ext2fs *fs;
 	struct ext4_extent *ep;
 	struct ext4_extent_path path = { .ep_bp = NULL };
-	daddr_t lbn;
+	daddr64_t lbn;
 
 	ip = VTOI(vp);
 	fs = ip->i_e2fs;
@@ -116,7 +116,7 @@ ext4_bmapext(struct vnode *vp, int32_t bn, int64_t *bnp, int *runp, int *runb)
 		return (EIO);
 
 	*bnp = fsbtodb(fs, lbn - ep->e_blk +
-	    (ep->e_start_lo | (daddr_t)ep->e_start_hi << 32));
+	    (ep->e_start_lo | (daddr64_t)ep->e_start_hi << 32));
 
 	if (*bnp == 0)
 		*bnp = -1;
@@ -139,14 +139,14 @@ ext4_bmapext(struct vnode *vp, int32_t bn, int64_t *bnp, int *runp, int *runb)
  */
 
 int
-ext2_bmaparray(struct vnode *vp, daddr_t bn, daddr_t *bnp, int *runp, int *runb)
+ext2_bmaparray(struct vnode *vp, daddr64_t bn, daddr64_t *bnp, int *runp, int *runb)
 {
 	struct inode *ip;
 	struct buf *bp;
 	struct ext2mount *ump;
 	struct mount *mp;
 	struct indir a[NIADDR+1], *ap;
-	daddr_t daddr;
+	daddr64_t daddr;
 	e2fs_lbn_t metalbn;
 	int error, num, maxrun = 0, bsize;
 	int *nump;
@@ -180,7 +180,7 @@ ext2_bmaparray(struct vnode *vp, daddr_t bn, daddr_t *bnp, int *runp, int *runb)
 		if (*bnp == 0) {
 			*bnp = -1;
 		} else if (runp) {
-			daddr_t bnb = bn;
+			daddr64_t bnb = bn;
 			for (++bn; bn < NDADDR && *runp < maxrun &&
 			    is_sequential(ump, ip->i_db[bn - 1], ip->i_db[bn]);
 			    ++bn, ++*runp);
@@ -286,7 +286,7 @@ ext2_bmaparray(struct vnode *vp, daddr_t bn, daddr_t *bnp, int *runp, int *runb)
  * once with the offset into the page itself.
  */
 int
-ext2_getlbns(struct vnode *vp, daddr_t bn, struct indir *ap, int *nump)
+ext2_getlbns(struct vnode *vp, daddr64_t bn, struct indir *ap, int *nump)
 {
 	long blockcnt;
 	e2fs_lbn_t metalbn, realbn;

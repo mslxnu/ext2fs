@@ -39,8 +39,6 @@
 #define	_FS_EXT2FS_INODE_H_
 
 #include <sys/param.h>
-#include <sys/lock.h>
-#include <sys/mutex.h>
 #include <sys/queue.h>
 
 #include <fs/ext2fs/ext2_extents.h>
@@ -173,7 +171,11 @@ struct indir {
 };
 
 /* Convert between inode pointers and vnode pointers. */
-#define VTOI(vp)	((struct inode *)(vp)->v_data)
+/*
+ * FreeBSD reaches a file system's private data through vp->v_data. XNU keeps
+ * the vnode opaque and publishes vnode_fsnode() for the same purpose.
+ */
+#define VTOI(vp)	((struct inode *)vnode_fsnode(vp))
 #define ITOV(ip)	((ip)->i_vnode)
 
 /* This overlays the fid structure (see mount.h). */

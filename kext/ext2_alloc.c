@@ -52,15 +52,15 @@
 #include <fs/ext2fs/ext2fs.h>
 #include <fs/ext2fs/ext2_extern.h>
 
-static daddr_t	ext2_alloccg(struct inode *, int, daddr_t, int);
-static daddr_t	ext2_clusteralloc(struct inode *, int, daddr_t, int);
+static daddr64_t	ext2_alloccg(struct inode *, int, daddr64_t, int);
+static daddr64_t	ext2_clusteralloc(struct inode *, int, daddr64_t, int);
 static u_long	ext2_dirpref(struct inode *);
 static void	ext2_fserr(struct m_ext2fs *, uid_t, char *);
 static u_long	ext2_hashalloc(struct inode *, int, long, int,
-				daddr_t (*)(struct inode *, int, daddr_t, 
+				daddr64_t (*)(struct inode *, int, daddr64_t, 
 						int));
-static daddr_t	ext2_nodealloccg(struct inode *, int, daddr_t, int);
-static daddr_t  ext2_mapsearch(struct m_ext2fs *, char *, daddr_t);
+static daddr64_t	ext2_nodealloccg(struct inode *, int, daddr64_t, int);
+static daddr64_t  ext2_mapsearch(struct m_ext2fs *, char *, daddr64_t);
 
 /*
  * Allocate a block in the filesystem.
@@ -80,7 +80,7 @@ static daddr_t  ext2_mapsearch(struct m_ext2fs *, char *, daddr_t);
  *        available block is located.
  */
 int
-ext2_alloc(struct inode *ip, daddr_t lbn, e4fs_daddr_t bpref, int size,
+ext2_alloc(struct inode *ip, daddr64_t lbn, e4fs_daddr_t bpref, int size,
     struct ucred *cred, e4fs_daddr_t *bnp)
 {
 	struct m_ext2fs *fs;
@@ -111,7 +111,7 @@ ext2_alloc(struct inode *ip, daddr_t lbn, e4fs_daddr_t bpref, int size,
 		cg = ino_to_cg(fs, ip->i_number);
 	else
 		cg = dtog(fs, bpref);
-	bno = (daddr_t)ext2_hashalloc(ip, cg, bpref, fs->e2fs_bsize,
+	bno = (daddr64_t)ext2_hashalloc(ip, cg, bpref, fs->e2fs_bsize,
 				      ext2_alloccg);
 	if (bno > 0) {
 		/* set next_alloc fields as done in block_getblk */
@@ -588,7 +588,7 @@ ext2_blkpref(struct inode *ip, e2fs_lbn_t lbn, int indx, e2fs_daddr_t *bap,
  */
 static u_long
 ext2_hashalloc(struct inode *ip, int cg, long pref, int size,
-                daddr_t (*allocator)(struct inode *, int, daddr_t, int))
+                daddr64_t (*allocator)(struct inode *, int, daddr64_t, int))
 {
 	struct m_ext2fs *fs;
 	ino_t result;
@@ -636,13 +636,13 @@ ext2_hashalloc(struct inode *ip, int cg, long pref, int size,
  * Check to see if a block of the appropriate size is available,
  * and if it is, allocate it.
  */
-static daddr_t
-ext2_alloccg(struct inode *ip, int cg, daddr_t bpref, int size)
+static daddr64_t
+ext2_alloccg(struct inode *ip, int cg, daddr64_t bpref, int size)
 {
 	struct m_ext2fs *fs;
 	struct buf *bp;
 	struct ext2mount *ump;
-	daddr_t bno, runstart, runlen;
+	daddr64_t bno, runstart, runlen;
 	int bit, loc, end, error, start;
 	char *bbp;
 	/* XXX ondisk32 */
@@ -768,8 +768,8 @@ gotit:
 /*
  * Determine whether a cluster can be allocated.
  */
-static daddr_t
-ext2_clusteralloc(struct inode *ip, int cg, daddr_t bpref, int len)
+static daddr64_t
+ext2_clusteralloc(struct inode *ip, int cg, daddr64_t bpref, int len)
 {
 	struct m_ext2fs *fs;
 	struct ext2mount *ump;
@@ -777,7 +777,7 @@ ext2_clusteralloc(struct inode *ip, int cg, daddr_t bpref, int len)
 	char *bbp;
 	int bit, error, got, i, loc, run;
 	int32_t *lp;
-	daddr_t bno;
+	daddr64_t bno;
 
 	fs = ip->i_e2fs;
 	ump = ip->i_ump;
@@ -879,8 +879,8 @@ fail:
  * Check to see if an inode is available, and if it is,
  * allocate it using tode in the specified cylinder group.
  */
-static daddr_t
-ext2_nodealloccg(struct inode *ip, int cg, daddr_t ipref, int mode)
+static daddr64_t
+ext2_nodealloccg(struct inode *ip, int cg, daddr64_t ipref, int mode)
 {
 	struct m_ext2fs *fs;
 	struct buf *bp;
@@ -1051,8 +1051,8 @@ ext2_vfree(struct vnode *pvp, ino_t ino, int mode)
  * It is a panic if a request is made to find a block if none are
  * available.
  */
-static daddr_t
-ext2_mapsearch(struct m_ext2fs *fs, char *bbp, daddr_t bpref)
+static daddr64_t
+ext2_mapsearch(struct m_ext2fs *fs, char *bbp, daddr64_t bpref)
 {
 	char *loc;
 	int start, len;

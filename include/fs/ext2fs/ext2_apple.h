@@ -18,7 +18,21 @@
 
 #include <kern/locks.h>
 #include <libkern/OSMalloc.h>
+#include <sys/buf.h>
 #include <sys/kernel_types.h>
+#include <sys/vnode.h>
+
+/*
+ * Block numbers.
+ *
+ * The imported sources were written against FreeBSD, whose daddr_t is 64 bits
+ * wide; XNU's daddr_t is int32_t and its 64-bit spelling is daddr64_t. The
+ * ext2 code both stores physical block numbers in daddr_t and, in the extent
+ * paths, shifts the high half of a 48-bit address up by 32, so the narrow type
+ * would truncate silently. Every plain daddr_t in the imported code has been
+ * changed to daddr64_t for that reason. e2fs_daddr_t is untouched: that one is
+ * genuinely a 32-bit on-disk quantity.
+ */
 
 /*
  * Name reported by lck_grp/OSMalloc introspection (lockstat, zprint).  The

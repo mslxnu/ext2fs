@@ -54,8 +54,8 @@
 #include <fs/ext2fs/fs.h>
 #include <fs/ext2fs/ext2_extern.h>
 
-static int ext2_indirtrunc(struct inode *, daddr_t, daddr_t,
-	    daddr_t, int, e4fs_daddr_t *);
+static int ext2_indirtrunc(struct inode *, daddr64_t, daddr64_t,
+	    daddr64_t, int, e4fs_daddr_t *);
 
 /*
  * Update the access, modified, and inode change times as specified by the
@@ -370,8 +370,8 @@ done:
  */
 
 static int
-ext2_indirtrunc(struct inode *ip, daddr_t lbn, daddr_t dbn,
-    daddr_t lastbn, int level, e4fs_daddr_t *countp)
+ext2_indirtrunc(struct inode *ip, daddr64_t lbn, daddr64_t dbn,
+    daddr64_t lastbn, int level, e4fs_daddr_t *countp)
 {
 	struct buf *bp;
 	struct m_ext2fs *fs = ip->i_e2fs;

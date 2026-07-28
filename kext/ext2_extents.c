@@ -32,7 +32,6 @@
 #include <sys/kernel.h>
 #include <sys/malloc.h>
 #include <sys/vnode.h>
-#include <sys/bio.h>
 #include <sys/buf.h>
 #include <sys/conf.h>
 
@@ -42,9 +41,10 @@
 #include <fs/ext2fs/ext2fs.h>
 #include <fs/ext2fs/ext2_extents.h>
 #include <fs/ext2fs/ext2_extern.h>
+#include <fs/ext2fs/ext2_apple.h>
 
 static void ext4_ext_binsearch_index(struct inode *ip, struct ext4_extent_path
-		*path, daddr_t lbn)
+		*path, daddr64_t lbn)
 {
 	struct ext4_extent_header *ehp = path->ep_header;
 	struct ext4_extent_index *l, *r, *m;
@@ -63,7 +63,7 @@ static void ext4_ext_binsearch_index(struct inode *ip, struct ext4_extent_path
 }
 
 static void
-ext4_ext_binsearch(struct inode *ip, struct ext4_extent_path *path, daddr_t lbn)
+ext4_ext_binsearch(struct inode *ip, struct ext4_extent_path *path, daddr64_t lbn)
 {
 	struct ext4_extent_header *ehp = path->ep_header;
 	struct ext4_extent *l, *r, *m;
@@ -88,7 +88,7 @@ ext4_ext_binsearch(struct inode *ip, struct ext4_extent_path *path, daddr_t lbn)
  * Find a block in ext4 extent cache.
  */
 int
-ext4_ext_in_cache(struct inode *ip, daddr_t lbn, struct ext4_extent *ep)
+ext4_ext_in_cache(struct inode *ip, daddr64_t lbn, struct ext4_extent *ep)
 {
 	struct ext4_extent_cache *ecp;
 	int ret = EXT4_EXT_CACHE_NO;
@@ -121,7 +121,7 @@ ext4_ext_put_cache(struct inode *ip, struct ext4_extent *ep, int type)
 	ecp->ec_type = type;
 	ecp->ec_blk = ep->e_blk;
 	ecp->ec_len = ep->e_len;
-	ecp->ec_start = (daddr_t)ep->e_start_hi << 32 | ep->e_start_lo;
+	ecp->ec_start = (daddr64_t)ep->e_start_hi << 32 | ep->e_start_lo;
 }
 
 /*
@@ -129,12 +129,12 @@ ext4_ext_put_cache(struct inode *ip, struct ext4_extent *ep, int type)
  */
 struct ext4_extent_path *
 ext4_ext_find_extent(struct m_ext2fs *fs, struct inode *ip,
-		     daddr_t lbn, struct ext4_extent_path *path)
+		     daddr64_t lbn, struct ext4_extent_path *path)
 {
 	struct ext4_extent_header *ehp;
 	uint16_t i;
 	int error, size;
-	daddr_t nblk;
+	daddr64_t nblk;
 
 	ehp = (struct ext4_extent_header *)(char *)ip->i_db;
 
@@ -148,21 +148,27 @@ ext4_ext_find_extent(struct m_ext2fs *fs, struct inode *ip,
 		path->ep_depth = 0;
 		path->ep_ext = NULL;
 
-		nblk = (daddr_t)path->ep_index->ei_leaf_hi << 32 |
+		nblk = (daddr64_t)path->ep_index->ei_leaf_hi << 32 |
 		    path->ep_index->ei_leaf_lo;
 		size = blksize(fs, ip, nblk);
 		if (path->ep_bp != NULL) {
-			brelse(path->ep_bp);
+			buf_brelse(path->ep_bp);
 			path->ep_bp = NULL;
 		}
-		error = bread(ip->i_devvp, fsbtodb(fs, nblk), size, NOCRED,
-			    &path->ep_bp);
+		/*
+		 * Extent index blocks are metadata read through the device
+		 * vnode, so buf_meta_bread rather than buf_bread: only files
+		 * may be backed by the UBC page cache.
+		 */
+		error = buf_meta_bread(ip->i_devvp, (daddr64_t)fsbtodb(fs, nblk),
+			    size, NOCRED, &path->ep_bp);
 		if (error) {
-			brelse(path->ep_bp);
+			if (path->ep_bp != NULL)
+				buf_brelse(path->ep_bp);
 			path->ep_bp = NULL;
 			return (NULL);
 		}
-		ehp = (struct ext4_extent_header *)path->ep_bp->b_data;
+		ehp = (struct ext4_extent_header *)buf_dataptr(path->ep_bp);
 		path->ep_header = ehp;
 	}
 

@@ -66,6 +66,8 @@ struct ext2_args {
 
 #ifdef _KERNEL
 
+#include <kern/locks.h>	/* lck_mtx_t */
+
 #ifdef MALLOC_DECLARE
 MALLOC_DECLARE(M_EXT2NODE);
 #endif
@@ -84,15 +86,17 @@ struct ext2mount {
 	u_long	um_bptrtodb;			/* indir ptr to disk block */
 	u_long	um_seqinc;			/* inc between seq blocks */
 
-	struct mtx um_lock;			/* Protects ext2mount & fs */
-
-	struct g_consumer *um_cp;
-	struct bufobj *um_bo;
+	/*
+	 * Protects ext2mount & fs. FreeBSD embeds a struct mtx; XNU's mutexes
+	 * are opaque and always heap-allocated out of a lock group, so this is
+	 * a pointer that ext2_mount() fills in from ext2_lck_grp.
+	 */
+	lck_mtx_t *um_lock;
 };
 
-#define	EXT2_LOCK(aa)		mtx_lock(&(aa)->um_lock)
-#define	EXT2_UNLOCK(aa)	mtx_unlock(&(aa)->um_lock)
-#define	EXT2_MTX(aa)		(&(aa)->um_lock)
+#define	EXT2_LOCK(aa)		lck_mtx_lock((aa)->um_lock)
+#define	EXT2_UNLOCK(aa)		lck_mtx_unlock((aa)->um_lock)
+#define	EXT2_MTX(aa)		((aa)->um_lock)
 
 /* Convert mount ptr to ext2fsmount ptr. */
 #define	VFSTOEXT2(mp)	((struct ext2mount *)((mp)->mnt_data))
