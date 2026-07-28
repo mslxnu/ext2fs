@@ -163,6 +163,19 @@ install-fs:
 	chown -R root:wheel $(FS_DIR)/ext2fs.fs
 	chmod -R 755 $(FS_DIR)/ext2fs.fs
 
+# Referenced by the install target since the beginning but never defined, which
+# made `make install` die with "No rule to make target 'install-tools'" before
+# it copied anything. The tool binaries are not produced yet, so the target
+# installs whatever tools/ has left in $(OUT) and stays quiet when that is
+# nothing.
+install-tools:
+	@mkdir -p $(SBIN_DIR)
+	@for t in $(OUT)/newfs_ext2fs $(OUT)/fsck_ext2fs; do \
+		test -f "$$t" || continue; \
+		echo "    install $$t -> $(SBIN_DIR)"; \
+		install -o root -g wheel -m 755 "$$t" "$(SBIN_DIR)/"; \
+	done
+
 postinstall:
 	@echo "ext2fs: installed kext, fs."
 

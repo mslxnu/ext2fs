@@ -2,12 +2,18 @@
 # Put user-defined variables here
 #
 
-FSNAME?=				"Second Extended Filesystem"
 KEXTNAME?=				ext2fs
 FSMOUNTEXE?=			mount_ext2fs
 KEXTVERSION?=			$(strip $(shell cat $(dir $(lastword $(MAKEFILE_LIST)))VERSION 2>/dev/null || echo 1.0.0))
 KEXTBUILD?=				1
+#
+# FSNAME names files - the ext2fs.fs bundle, its mount_ext2fs executable - so it
+# has to stay a single shell-safe token. The human-readable name that Disk
+# Utility and Finder display is FSLABEL, which is only ever substituted into
+# Info.plist and may contain spaces.
+#
 FSNAME?=				$(KEXTNAME)
+FSLABEL?=				Second Extended Filesystem
 FSVERSION?=				$(KEXTVERSION)
 FSBUILD?=				$(KEXTBUILD)
 BUNDLEDOMAIN?=			com.beako.filesystems

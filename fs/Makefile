@@ -18,10 +18,11 @@ CFLAGS+= -target $(TARGET_TRIPLE) \
          -isysroot $(SDKROOT) \
          $(ARCHFLAGS) \
          -x c \
-         -std=c99 \
+         -std=gnu99 \
          -bundle \
          -I../lib \
          -I../include \
+         -I../vendor/libutil \
          -idirafter ../include/xnu/bsd
 
 CFLAGS+= -Wall -Wextra -Wno-vla -Wno-nullability-completeness
@@ -51,6 +52,8 @@ Info.plist~: Info.plist.in
 	sed \
 		-e 's/__FSNAME__/$(FSNAME)/g' \
 		-e 's/__FSMACHO__/$(FSNAME)/g' \
+		-e 's/__FSMOUNTEXE__/$(FSMOUNTEXE)/g' \
+		-e 's/__FSLABEL__/$(FSLABEL)/g' \
 		-e 's/__FSVERSION__/$(FSVERSION)/g' \
 		-e 's/__FSBUILD__/$(FSBUILD)/g' \
 		-e 's/__BUNDLEID__/$(BUNDLEID)/g' \

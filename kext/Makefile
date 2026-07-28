@@ -19,9 +19,24 @@ MACOSX_VERSION_MIN?= 12.0
 CC=       $(shell xcrun -find -sdk $(SDKROOT) cc)
 CODESIGN= $(shell xcrun -find -sdk $(SDKROOT) codesign)
 
-CSRCS:=   $(wildcard *.c) $(wildcard **/*.c)
-# CXXSRCS:= $(wildcard *.cpp)
-OBJS:=    $(CSRCS:.c=.o) # $(CXXSRCS:.cpp=.o)
+# Sources are listed explicitly rather than globbed. The ext2_*.c files in this
+# directory are still the verbatim NextBSD import and do not compile against the
+# XNU KPI yet; each one moves from PENDING_CSRCS to CSRCS as it is ported, so the
+# tree builds green at every step and the remaining work is visible here.
+CSRCS:=   ext2fs.c
+
+PENDING_CSRCS:= ext2_alloc.c \
+                ext2_balloc.c \
+                ext2_bmap.c \
+                ext2_extents.c \
+                ext2_inode.c \
+                ext2_inode_cnv.c \
+                ext2_lookup.c \
+                ext2_subr.c \
+                ext2_vfsops.c \
+                ext2_vnops.c
+
+OBJS:=    $(CSRCS:.c=.o)
 
 CFLAGS+= -DKEXTNAME_S=\"$(KEXTNAME)\" \
          -DKEXTVERSION_S=\"$(KEXTVERSION)\" \
@@ -98,9 +113,7 @@ CFLAGS+= -target $(TARGET_TRIPLE) \
          -fno-stack-protector \
          -I../lib/libbsdmalloc/include \
          -I../lib/libsbuf/include \
-         -I../lib/libcpuft/include \
          -I../lib/libkext/include \
-         -I../include \
          $(XNU_INCLUDES) \
          -isystem $(KERNEL_HEADERS) \
          $(ARCH_SYS_INCLUDES)
@@ -123,26 +136,18 @@ LDFLAGS+= -target $(TARGET_TRIPLE) \
           $(ARCHFLAGS) \
           -nostdlib \
           -Xlinker -kext \
-          -Xlinker -object_path_lto ext2fs_alloc.o \
-          -Xlinker -object_path_lto ext2fs_balloc.o \
-          -Xlinker -object_path_lto ext2fs_bmap.o \
-          -Xlinker -object_path_lto ext2fs_extents.o \
-          -Xlinker -object_path_lto ext2fs_inode.o \
-          -Xlinker -object_path_lto ext2fs_inode_cnv.o \
-          -Xlinker -object_path_lto ext2fs_lookup.o \
-          -Xlinker -object_path_lto ext2fs_subr.o \
-          -Xlinker -object_path_lto ext2fs_vfsops.o \
-          -Xlinker -object_path_lto ext2fs_vnops.o \
+          $(foreach o,$(OBJS),-Xlinker -object_path_lto -Xlinker $(o)) \
           -Xlinker -export_dynamic
 
+# vendor/libutil and vendor/diskdev_cmds/disklib are userland libraries built
+# against libSystem; they belong to the tools, not to the kext, and linking them
+# here would drag in unresolved userland symbols.
 LIBS+= -L$(KERNEL_LIBDIR) \
        -L../lib/libkext \
        -L../lib/libsbuf \
-       -L../lib/libbsdmalloc \
-       -L../vendor/libutil \
-       -L../vendor/diskdev_cmds/disklib
+       -L../lib/libbsdmalloc
 
-LIBS+= -lkmod -lkext -lsbuf -lbsdmalloc -lutil -ldisklib
+LIBS+= -lkmod -lkext -lsbuf -lbsdmalloc
 
 KLFLAGS+= -xml -c -undef-symbols
 

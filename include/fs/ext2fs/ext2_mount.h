@@ -33,6 +33,37 @@
 #ifndef _FS_EXT2FS_EXT2_MOUNT_H_
 #define	_FS_EXT2FS_EXT2_MOUNT_H_
 
+#include <stdint.h>
+
+/*
+ * Darwin: name under which the kext registers with VFS.  This is the string
+ * handed to mount(2) as its type argument and the one that shows up in
+ * mount(8) output, so it has to match vfe_fsname in the vfs_fsentry.
+ */
+#define	MOUNT_EXT2FS	"ext2fs"
+
+/*
+ * Arguments passed by mount_ext2fs(8) through mount(2).  Shared with userland,
+ * hence outside the _KERNEL guard.
+ *
+ * fspec must stay the first member: the file system registers with
+ * VFS_TBLLOCALVOL, which makes XNU read a device path pointer from the front
+ * of the argument block, resolve it itself, and hand the resulting devvp to
+ * VFS_MOUNT with the argument pointer advanced past it.
+ *
+ * The layout is only defined for 64-bit userland; macOS has shipped no 32-bit
+ * user space since 10.15, well below the 12.0 deployment target.
+ */
+#define	EXT2_ARGSVERSION	1
+
+struct ext2_args {
+	char		*fspec;		/* block special device to mount */
+	uint32_t	 e2_version;	/* EXT2_ARGSVERSION */
+	uint32_t	 e2_flags;	/* EXT2MNT_* below */
+};
+
+#define	EXT2MNT_FORCE		0x00000001	/* mount despite an unclean fs */
+
 #ifdef _KERNEL
 
 #ifdef MALLOC_DECLARE

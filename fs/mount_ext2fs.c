@@ -30,6 +30,17 @@
  * SUCH DAMAGE.
  */
 
+/*
+ * Darwin port.  Two things differ from the OpenBSD original:
+ *
+ *   - There is no struct ufs_args and no export_args on macOS; exports are
+ *     configured out of band by nfsd, not through the mount arguments.  The
+ *     file system's own struct ext2_args is used instead.
+ *
+ *   - Apple's getmntopts() is the NetBSD four-argument form returning an
+ *     opaque parse handle, not OpenBSD's three-argument void form.
+ */
+
 #include <sys/types.h>
 #include <sys/mount.h>
 
@@ -43,47 +54,51 @@
 
 #include "mntopts.h"
 
-void	ext2fs_usage(void);
+#include <fs/ext2fs/ext2_mount.h>
+
+static void	ext2fs_usage(void) __dead2;
 
 static const struct mntopt mopts[] = {
 	MOPT_STDOPTS,
 	MOPT_UPDATE,
-	{ NULL }
+	{ NULL, 0, 0, 0 }
 };
 
 int
 main(int argc, char *argv[])
 {
-	struct ufs_args args;		/* XXX ffs_args */
-	int ch, mntflags;
+	struct ext2_args args;
+	mntoptparse_t mp;
+	int ch, mntflags, altflags;
 	char fs_name[PATH_MAX], *errcause;
 
 	mntflags = 0;
+	altflags = 0;
 	optind = optreset = 1;		/* Reset for parse of new argv. */
-	while ((ch = getopt(argc, argv, "o:")) != -1)
+	while ((ch = getopt(argc, argv, "o:")) != -1) {
 		switch (ch) {
 		case 'o':
-			getmntopts(optarg, mopts, &mntflags);
+			mp = getmntopts(optarg, mopts, &mntflags, &altflags);
+			if (mp == NULL)
+				err(1, "getmntopts");
+			freemntopts(mp);
 			break;
 		default:
 			ext2fs_usage();
 		}
+	}
 	argc -= optind;
 	argv += optind;
 
 	if (argc != 2)
 		ext2fs_usage();
 
+	memset(&args, 0, sizeof(args));
 	args.fspec = argv[0];		/* The name of the device file. */
+	args.e2_version = EXT2_ARGSVERSION;
+
 	if (realpath(argv[1], fs_name) == NULL)	/* The mount point. */
 		err(1, "realpath %s", argv[1]);
-
-#define DEFAULT_ROOTUID	-2
-	args.export_info.ex_root = DEFAULT_ROOTUID;
-	if (mntflags & MNT_RDONLY)
-		args.export_info.ex_flags = MNT_EXRDONLY;
-	else
-		args.export_info.ex_flags = 0;
 
 	if (mount(MOUNT_EXT2FS, fs_name, mntflags, &args) == -1) {
 		switch (errno) {
@@ -106,7 +121,7 @@ main(int argc, char *argv[])
 	exit(0);
 }
 
-void
+static void
 ext2fs_usage(void)
 {
 	(void)fprintf(stderr,

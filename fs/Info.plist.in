@@ -26,20 +26,115 @@
 	<array>
 		<string>MacOSX</string>
 	</array>
+	<key>CFBundleVersion</key>
+	<string>__FSVERSION__</string>
+	<!--
+	    Media that diskarbitrationd should offer to this file system. Each entry
+	    names the probe binary that decides whether the media really holds an
+	    ext2 superblock; FSProbeOrder breaks ties when more than one file system
+	    claims the same content hint, lowest running first. Paths are relative
+	    to the personality directory inside the bundle, hence the leading ../..
+	-->
+	<key>FSMediaTypes</key>
+	<dict>
+		<!-- GPT: Linux filesystem data -->
+		<key>0FC63DAF-8483-4772-8E79-3D69D8477DE4</key>
+		<dict>
+			<key>FSMediaProperties</key>
+			<dict>
+				<key>Content Hint</key>
+				<string>0FC63DAF-8483-4772-8E79-3D69D8477DE4</string>
+				<key>Leaf</key>
+				<true/>
+			</dict>
+			<key>FSProbeArguments</key>
+			<string>-p</string>
+			<key>FSProbeExecutable</key>
+			<string>../../__FSNAME__.util</string>
+			<key>FSProbeOrder</key>
+			<integer>1000</integer>
+		</dict>
+		<!-- MBR: Linux native, type 0x83 -->
+		<key>Linux_Ext2FS</key>
+		<dict>
+			<key>FSMediaProperties</key>
+			<dict>
+				<key>Content Hint</key>
+				<string>Linux_Ext2FS</string>
+				<key>Leaf</key>
+				<true/>
+			</dict>
+			<key>FSProbeArguments</key>
+			<string>-p</string>
+			<key>FSProbeExecutable</key>
+			<string>../../__FSNAME__.util</string>
+			<key>FSProbeOrder</key>
+			<integer>1000</integer>
+		</dict>
+		<!-- APM: what the ext2fsx lineage wrote on Apple partition maps -->
+		<key>Apple_UNIX_SVR2</key>
+		<dict>
+			<key>FSMediaProperties</key>
+			<dict>
+				<key>Content Hint</key>
+				<string>Apple_UNIX_SVR2</string>
+				<key>Leaf</key>
+				<true/>
+			</dict>
+			<key>FSProbeArguments</key>
+			<string>-p</string>
+			<key>FSProbeExecutable</key>
+			<string>../../__FSNAME__.util</string>
+			<key>FSProbeOrder</key>
+			<integer>2000</integer>
+		</dict>
+		<!--
+		    Media carrying no partition map: an ext2 image written to a whole
+		    disk. Probed last so any real partition scheme gets first refusal.
+		-->
+		<key>Partitionless</key>
+		<dict>
+			<key>FSMediaProperties</key>
+			<dict>
+				<key>Leaf</key>
+				<true/>
+				<key>Whole</key>
+				<true/>
+			</dict>
+			<key>FSProbeArguments</key>
+			<string>-p</string>
+			<key>FSProbeExecutable</key>
+			<string>../../__FSNAME__.util</string>
+			<key>FSProbeOrder</key>
+			<integer>5000</integer>
+		</dict>
+	</dict>
 	<key>FSPersonalities</key>
 	<dict>
-		<key>ProcFS</key>
+		<key>__FSNAME__</key>
 		<dict>
+			<key>FSName</key>
+			<string>__FSLABEL__</string>
 			<key>FSMountArguments</key>
 			<string></string>
 			<key>FSMountExecutable</key>
 			<string>__FSMOUNTEXE__</string>
-			<key>FSName</key>
-			<string>__FSNAME__</string>
+			<key>FSFormatArguments</key>
+			<string>-F</string>
+			<key>FSFormatExecutable</key>
+			<string>../../../../../../usr/local/sbin/newfs___FSNAME__</string>
+			<key>FSFormatMinimumSize</key>
+			<integer>524288</integer>
+			<key>FSRepairArguments</key>
+			<string>-y</string>
+			<key>FSRepairExecutable</key>
+			<string>../../../../../../usr/local/sbin/fsck___FSNAME__</string>
+			<key>FSVerificationArguments</key>
+			<string>-q</string>
+			<key>FSVerificationExecutable</key>
+			<string>../../../../../../usr/local/sbin/fsck___FSNAME__</string>
 		</dict>
 	</dict>
-	<key>CFBundleVersion</key>
-	<string>__FSVERSION__</string>
 	<key>OSBundleLibraries</key>
 	<dict>
 		<key>com.apple.kpi.bsd</key>
@@ -49,4 +144,3 @@
 	</dict>
 </dict>
 </plist>
-
