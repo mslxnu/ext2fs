@@ -67,10 +67,14 @@ void	ext2_ei2i(struct ext2fs_dinode *, struct inode *);
 int	ext2_getlbns(struct vnode *, daddr64_t, struct indir *, int *);
 void	ext2_i2ei(struct inode *, struct ext2fs_dinode *);
 void	ext2_itimes(struct vnode *vp);
-int	ext2_reallocblks(struct vop_reallocblks_args *);
 int	ext2_reclaim(struct vop_reclaim_args *);
 int	ext2_truncate(struct vnode *, off_t, int, struct ucred *, struct thread *);
 int	ext2_update(struct vnode *, int);
+/*
+ * The file system's own vget. XNU keeps the VFS_* dispatch macros to itself,
+ * so ext2_valloc() calls this directly rather than going through VFS_VGET.
+ */
+int	ext2_vget(struct mount *, ino_t, struct vnode **, vfs_context_t);
 int	ext2_valloc(struct vnode *, int, struct ucred *, struct vnode **);
 int	ext2_vfree(struct vnode *, ino_t, int);
 int	ext2_vinit(struct mount *, struct vop_vector *, struct vnode **vpp);

@@ -19,8 +19,23 @@
 #include <kern/locks.h>
 #include <libkern/OSMalloc.h>
 #include <sys/buf.h>
+#include <sys/random.h>	/* read_random */
 #include <sys/kernel_types.h>
 #include <sys/vnode.h>
+
+/*
+ * Bytes <-> device blocks.
+ *
+ * <arm/param.h> and <i386/param.h> define btodb/dbtob under __APPLE__ taking
+ * the block size as a second argument. The BSD file system code these sources
+ * come from uses the one-argument form that assumes DEV_BSIZE, so the Apple
+ * spelling is replaced outright rather than worked around at each call site.
+ * The same substitution is made for the userland tools in ext2_compat.h.
+ */
+#undef btodb
+#undef dbtob
+#define	btodb(bytes)	((bytes) >> DEV_BSHIFT)
+#define	dbtob(db)	((db) << DEV_BSHIFT)
 
 /*
  * Block numbers.
@@ -40,6 +55,29 @@
  * token, BUNDLEID_S is its stringified form.
  */
 #define	EXT2_LCKGRP_NAME	"com.beako.filesystems.ext2fs"
+
+/*
+ * Find the first byte in a buffer that is not equal to c, or NULL if every
+ * byte matches.
+ *
+ * FreeBSD's libkern supplies this; XNU has no counterpart. The allocator uses
+ * it to skip over fully-used bytes of a block or inode bitmap, where c is
+ * 0xff, so a byte-at-a-time scan is adequate - the bitmaps are one block and
+ * the loop stops at the first byte with a free bit.
+ */
+static __inline void *
+memcchr(const void *s, int c, size_t n)
+{
+	const unsigned char *p = (const unsigned char *)s;
+
+	for (; n != 0; n--, p++) {
+		if (*p != (unsigned char)c) {
+			return (void *)(uintptr_t)p;
+		}
+	}
+
+	return (NULL);
+}
 
 /*
  * Kext-wide allocation tag and lock group.  Both are created by ext2_init()

@@ -45,12 +45,15 @@
 #include <sys/sysctl.h>
 #include <sys/syslog.h>
 #include <sys/buf.h>
+#include <sys/kauth.h>
+#include <libkern/libkern.h>
 
 #include <fs/ext2fs/fs.h>
 #include <fs/ext2fs/inode.h>
 #include <fs/ext2fs/ext2_mount.h>
 #include <fs/ext2fs/ext2fs.h>
 #include <fs/ext2fs/ext2_extern.h>
+#include <fs/ext2fs/ext2_apple.h>
 
 static daddr64_t	ext2_alloccg(struct inode *, int, daddr64_t, int);
 static daddr64_t	ext2_clusteralloc(struct inode *, int, daddr64_t, int);
@@ -90,7 +93,7 @@ ext2_alloc(struct inode *ip, daddr64_t lbn, e4fs_daddr_t bpref, int size,
 	*bnp = 0;
 	fs = ip->i_e2fs;
 	ump = ip->i_ump;
-	mtx_assert(EXT2_MTX(ump), MA_OWNED);
+	LCK_MTX_ASSERT(EXT2_MTX(ump), LCK_MTX_ASSERT_OWNED);
 #ifdef INVARIANTS
 	if ((u_int)size > fs->e2fs_bsize || blkoff(fs, size) != 0) {
 		vn_printf(ip->i_devvp, "bsize = %lu, size = %d, fs = %s\n",
@@ -100,9 +103,9 @@ ext2_alloc(struct inode *ip, daddr64_t lbn, e4fs_daddr_t bpref, int size,
 	if (cred == NOCRED)
 		panic("ext2_alloc: missing credential");
 #endif /* INVARIANTS */
-	if (size == fs->e2fs_bsize && fs->e2fs->e2fs_fbcount == 0)
+	if (size == (int)fs->e2fs_bsize && fs->e2fs->e2fs_fbcount == 0)
 		goto nospace;
-	if (cred->cr_uid != 0 && 
+	if (kauth_cred_getuid(cred) != 0 && 
 		fs->e2fs->e2fs_fbcount < fs->e2fs->e2fs_rbcount)
 		goto nospace;
 	if (bpref >= fs->e2fs->e2fs_bcount)
@@ -125,8 +128,8 @@ ext2_alloc(struct inode *ip, daddr64_t lbn, e4fs_daddr_t bpref, int size,
 	}
 nospace:
 	EXT2_UNLOCK(ump);
-	ext2_fserr(fs, cred->cr_uid, "filesystem full");
-	uprintf("\n%s: write failed, filesystem is full\n", fs->e2fs_fsmnt);
+	ext2_fserr(fs, kauth_cred_getuid(cred), "filesystem full");
+	printf("\n%s: write failed, filesystem is full\n", fs->e2fs_fsmnt);
 	return (ENOSPC);
 }
 
@@ -145,199 +148,17 @@ nospace:
  * the previous block allocation will be used.
  */
 
-static SYSCTL_NODE(_vfs, OID_AUTO, ext2fs, CTLFLAG_RW, 0, "EXT2FS filesystem");
-
-static int doasyncfree = 1;
-SYSCTL_INT(_vfs_ext2fs, OID_AUTO, doasyncfree, CTLFLAG_RW, &doasyncfree, 0,
-    "Use asychronous writes to update block pointers when freeing blocks");
-
-static int doreallocblks = 1;
-SYSCTL_INT(_vfs_ext2fs, OID_AUTO, doreallocblks, CTLFLAG_RW, &doreallocblks, 0, "");
-
-int
-ext2_reallocblks(struct vop_reallocblks_args *ap)
-{
-	struct m_ext2fs *fs;
-	struct inode *ip;
-	struct vnode *vp;
-	struct buf *sbp, *ebp;
-	uint32_t *bap, *sbap, *ebap = 0;
-	struct ext2mount *ump;
-	struct cluster_save *buflist;
-	struct indir start_ap[NIADDR + 1], end_ap[NIADDR + 1], *idp;
-	e2fs_lbn_t start_lbn, end_lbn;
-	int soff;
-	e2fs_daddr_t newblk, blkno;
-	int i, len, start_lvl, end_lvl, pref, ssize;
-
-	if (doreallocblks == 0)
-		  return (ENOSPC);
-
-	vp = ap->a_vp;
-	ip = VTOI(vp);
-	fs = ip->i_e2fs;
-	ump = ip->i_ump;
-
-	if (fs->e2fs_contigsumsize <= 0)
-		return (ENOSPC);
-
-	buflist = ap->a_buflist;
-	len = buflist->bs_nchildren;
-	start_lbn = buflist->bs_children[0]->b_lblkno;
-	end_lbn = start_lbn + len - 1;
-#ifdef INVARIANTS
-	for (i = 1; i < len; i++)
-		if (buflist->bs_children[i]->b_lblkno != start_lbn + i)
-			panic("ext2_reallocblks: non-cluster");
-#endif
-	/*
-	 * If the cluster crosses the boundary for the first indirect
-	 * block, leave space for the indirect block. Indirect blocks
-	 * are initially laid out in a position after the last direct
-	 * block. Block reallocation would usually destroy locality by
-	 * moving the indirect block out of the way to make room for
-	 * data blocks if we didn't compensate here. We should also do
-	 * this for other indirect block boundaries, but it is only
-	 * important for the first one.
-	 */
-	if (start_lbn < NDADDR && end_lbn >= NDADDR)
-		return (ENOSPC);
-	/*
-	 * If the latest allocation is in a new cylinder group, assume that
-	 * the filesystem has decided to move and do not force it back to
-	 * the previous cylinder group.
-	 */
-	if (dtog(fs, dbtofsb(fs, buflist->bs_children[0]->b_blkno)) !=
-	    dtog(fs, dbtofsb(fs, buflist->bs_children[len - 1]->b_blkno)))
-		return (ENOSPC);
-	if (ext2_getlbns(vp, start_lbn, start_ap, &start_lvl) ||
-	    ext2_getlbns(vp, end_lbn, end_ap, &end_lvl))
-		return (ENOSPC);
-	/*
-	 * Get the starting offset and block map for the first block.
-	 */
-	if (start_lvl == 0) {
-		sbap = &ip->i_db[0];
-		soff = start_lbn;
-	} else {
-		idp = &start_ap[start_lvl - 1];
-		if (bread(vp, idp->in_lbn, (int)fs->e2fs_bsize, NOCRED, &sbp)) {
-			brelse(sbp);
-			return (ENOSPC);
-		}
-		sbap = (u_int *)sbp->b_data;
-		soff = idp->in_off;
-	}
-	/*
-	 * If the block range spans two block maps, get the second map.
-	 */
-	if (end_lvl == 0 || (idp = &end_ap[end_lvl - 1])->in_off + 1 >= len) {
-		ssize = len;
-	} else {
-#ifdef INVARIANTS
-		if (start_ap[start_lvl-1].in_lbn == idp->in_lbn)
-			panic("ext2_reallocblks: start == end");
-#endif
-		ssize = len - (idp->in_off + 1);
-		if (bread(vp, idp->in_lbn, (int)fs->e2fs_bsize, NOCRED, &ebp))
-			goto fail;
-		ebap = (u_int *)ebp->b_data;
-	}
-	/*
-	 * Find the preferred location for the cluster.
-	 */
-	EXT2_LOCK(ump);
-	pref = ext2_blkpref(ip, start_lbn, soff, sbap, 0);
-	/*
-	 * Search the block map looking for an allocation of the desired size.
-	 */
-	if ((newblk = (e2fs_daddr_t)ext2_hashalloc(ip, dtog(fs, pref), pref,
-	    len, ext2_clusteralloc)) == 0){
-		EXT2_UNLOCK(ump);
-		goto fail;
-	}	
-	/*
-	 * We have found a new contiguous block.
-	 *
-	 * First we have to replace the old block pointers with the new
-	 * block pointers in the inode and indirect blocks associated
-	 * with the file.
-	 */
-#ifdef DEBUG
-	printf("realloc: ino %ju, lbns %jd-%jd\n\told:",
-	    (uintmax_t)ip->i_number, (intmax_t)start_lbn, (intmax_t)end_lbn);
-#endif /* DEBUG */
-	blkno = newblk;
-	for (bap = &sbap[soff], i = 0; i < len; i++, blkno += fs->e2fs_fpb) {
-		if (i == ssize) {
-			bap = ebap;
-			soff = -i;
-		}
-#ifdef INVARIANTS
-		if (buflist->bs_children[i]->b_blkno != fsbtodb(fs, *bap))
-			panic("ext2_reallocblks: alloc mismatch");
-#endif
-#ifdef DEBUG
-	printf(" %d,", *bap);
-#endif /* DEBUG */
-		*bap++ = blkno;
-	}
-	/*
-	 * Next we must write out the modified inode and indirect blocks.
-	 * For strict correctness, the writes should be synchronous since
-	 * the old block values may have been written to disk. In practise
-	 * they are almost never written, but if we are concerned about 
-	 * strict correctness, the `doasyncfree' flag should be set to zero.
-	 *
-	 * The test on `doasyncfree' should be changed to test a flag
-	 * that shows whether the associated buffers and inodes have
-	 * been written. The flag should be set when the cluster is
-	 * started and cleared whenever the buffer or inode is flushed.
-	 * We can then check below to see if it is set, and do the
-	 * synchronous write only when it has been cleared.
-	 */
-	if (sbap != &ip->i_db[0]) {
-		if (doasyncfree)
-			bdwrite(sbp);
-		else
-			bwrite(sbp);
-	} else {
-		ip->i_flag |= IN_CHANGE | IN_UPDATE;
-		if (!doasyncfree)
-			ext2_update(vp, 1);
-	}
-	if (ssize < len) {
-		if (doasyncfree)
-			bdwrite(ebp);
-		else
-			bwrite(ebp);
-	}
-	/*
-	 * Last, free the old blocks and assign the new blocks to the buffers.
-	 */
-#ifdef DEBUG
-	printf("\n\tnew:");
-#endif /* DEBUG */
-	for (blkno = newblk, i = 0; i < len; i++, blkno += fs->e2fs_fpb) {
-		ext2_blkfree(ip, dbtofsb(fs, buflist->bs_children[i]->b_blkno),
-		    fs->e2fs_bsize);
-		buflist->bs_children[i]->b_blkno = fsbtodb(fs, blkno);
-#ifdef DEBUG
-		printf(" %d,", blkno);
-#endif /* DEBUG */
-	}
-#ifdef DEBUG
-	printf("\n");
-#endif /* DEBUG */
-	return (0);
-
-fail:
-	if (ssize < len)
-		brelse(ebp);
-	if (sbap != &ip->i_db[0])
-		brelse(sbp);
-	return (ENOSPC);
-}
+/*
+ * FreeBSD implements VOP_REALLOCBLKS here: on a clustered write it relocates a
+ * file's blocks so they end up contiguous. XNU has no VNOP_REALLOCBLKS - there
+ * is no such entry in the vnode operation vector - so nothing could ever call
+ * it, and the implementation depended on struct cluster_save and the rest of
+ * FreeBSD's cluster layer besides. It is dropped rather than left to rot.
+ *
+ * The two sysctls that tuned it (vfs.ext2fs.doasyncfree and .doreallocblks)
+ * went with it; the remaining users of doasyncfree are gone along with the
+ * function itself.
+ */
 
 /*
  * Allocate an inode in the filesystem.
@@ -381,7 +202,13 @@ ext2_valloc(struct vnode *pvp, int mode, struct ucred *cred, struct vnode **vpp)
 
 	if (ino == 0) 
 		goto noinodes;
-	error = VFS_VGET(pvp->v_mount, ino, LK_EXCLUSIVE, vpp);
+	/*
+	 * XNU does not export VFS_VGET to kexts - the VFS dispatch macros are
+	 * kernel-internal - so the file system calls its own vget directly.
+	 * There is no lock flag to pass either: XNU vnodes come back from
+	 * vnode_create() with an iocount and no lock mode to choose.
+	 */
+	error = ext2_vget(vnode_mount(pvp), ino, vpp, vfs_context_current());
 	if (error) {
 		ext2_vfree(pvp, ino, mode);
 		return (error);
@@ -407,10 +234,19 @@ ext2_valloc(struct vnode *pvp, int mode, struct ucred *cred, struct vnode **vpp)
 	 * Set up a new generation number for this inode.
 	 * XXX check if this makes sense in ext2
 	 */
-	if (ip->i_gen == 0 || ++ip->i_gen == 0)
-		ip->i_gen = random() / 2 + 1;
+	/*
+	 * random() is not part of the KPI; read_random() is the published way
+	 * to get entropy. The value is only a generation counter, so any
+	 * non-zero number will do.
+	 */
+	if (ip->i_gen == 0 || ++ip->i_gen == 0) {
+		uint32_t gen;
 
-	vfs_timestamp(&ts);
+		read_random(&gen, sizeof(gen));
+		ip->i_gen = (gen >> 1) + 1;
+	}
+
+	nanotime(&ts);
 	ip->i_birthtime = ts.tv_sec;
 	ip->i_birthnsec = ts.tv_nsec;
 
@@ -420,8 +256,8 @@ printf("ext2_valloc: allocated inode %d\n", ino);
 	return (0);
 noinodes:
 	EXT2_UNLOCK(ump);
-	ext2_fserr(fs, cred->cr_uid, "out of inodes");
-	uprintf("\n%s: create/symlink failed, no inodes free\n", fs->e2fs_fsmnt);
+	ext2_fserr(fs, kauth_cred_getuid(cred), "out of inodes");
+	printf("\n%s: create/symlink failed, no inodes free\n", fs->e2fs_fsmnt);
 	return (ENOSPC);
 }
 
@@ -449,7 +285,7 @@ ext2_dirpref(struct inode *pip)
 	u_int mincg, minndir;
 	u_int dirsize, maxcontigdirs;
 
-	mtx_assert(EXT2_MTX(pip->i_ump), MA_OWNED);
+	LCK_MTX_ASSERT(EXT2_MTX(pip->i_ump), LCK_MTX_ASSERT_OWNED);
 	fs = pip->i_e2fs;
 
 	avgifree = fs->e2fs->e2fs_ficount / fs->e2fs_gcount;
@@ -459,12 +295,20 @@ ext2_dirpref(struct inode *pip)
 	/*
 	 * Force allocation in another cg if creating a first level dir.
 	 */
-	ASSERT_VOP_LOCKED(ITOV(pip), "ext2fs_dirpref");
-	if (ITOV(pip)->v_vflag & VV_ROOT) {
-		prefcg = arc4random() % fs->e2fs_gcount;
+	/*
+	 * FreeBSD asserted here that the parent's vnode was locked. XNU has no
+	 * equivalent - it does not expose a vnode's lock state - so the
+	 * assertion is dropped; vnode_isvroot() replaces the VV_ROOT flag test,
+	 * and read_random() stands in for arc4random(), which is not KPI.
+	 */
+	if (vnode_isvroot(ITOV(pip))) {
+		uint32_t r;
+
+		read_random(&r, sizeof(r));
+		prefcg = r % fs->e2fs_gcount;
 		mincg = prefcg;
 		minndir = fs->e2fs_ipg;
-		for (cg = prefcg; cg < fs->e2fs_gcount; cg++)
+		for (cg = prefcg; cg < (int)fs->e2fs_gcount; cg++)
 			if (fs->e2fs_gd[cg].ext2bgd_ndirs < minndir &&
 			    fs->e2fs_gd[cg].ext2bgd_nifree >= avgifree &&
 			    fs->e2fs_gd[cg].ext2bgd_nbfree >= avgbfree) {
@@ -509,7 +353,7 @@ ext2_dirpref(struct inode *pip)
 	 * inodes or space.
 	 */
 	prefcg = ino_to_cg(fs, pip->i_number);
-	for (cg = prefcg; cg < fs->e2fs_gcount; cg++)
+	for (cg = prefcg; cg < (int)fs->e2fs_gcount; cg++)
 		if (fs->e2fs_gd[cg].ext2bgd_ndirs < maxndir &&
 		    fs->e2fs_gd[cg].ext2bgd_nifree >= minifree &&
 		    fs->e2fs_gd[cg].ext2bgd_nbfree >= minbfree) {
@@ -526,7 +370,7 @@ ext2_dirpref(struct inode *pip)
 	/*
 	 * This is a backstop when we have deficit in space.
 	 */
-	for (cg = prefcg; cg < fs->e2fs_gcount; cg++)
+	for (cg = prefcg; cg < (int)fs->e2fs_gcount; cg++)
 		if (fs->e2fs_gd[cg].ext2bgd_nifree >= avgifree)
 			return (cg);
 	for (cg = 0; cg < prefcg; cg++)
@@ -553,7 +397,7 @@ ext2_blkpref(struct inode *ip, e2fs_lbn_t lbn, int indx, e2fs_daddr_t *bap,
     e2fs_daddr_t blocknr)
 {
 	int	tmp;
-	mtx_assert(EXT2_MTX(ip->i_ump), MA_OWNED);
+	LCK_MTX_ASSERT(EXT2_MTX(ip->i_ump), LCK_MTX_ASSERT_OWNED);
 
 	/* if the next block is actually what we thought it is,
 	   then set the goal to what we thought it should be
@@ -594,7 +438,7 @@ ext2_hashalloc(struct inode *ip, int cg, long pref, int size,
 	ino_t result;
 	int i, icg = cg;
 
-	mtx_assert(EXT2_MTX(ip->i_ump), MA_OWNED);
+	LCK_MTX_ASSERT(EXT2_MTX(ip->i_ump), LCK_MTX_ASSERT_OWNED);
 	fs = ip->i_e2fs;
 	/*
 	 * 1: preferred cylinder group
@@ -605,9 +449,9 @@ ext2_hashalloc(struct inode *ip, int cg, long pref, int size,
 	/*
 	 * 2: quadratic rehash
 	 */
-	for (i = 1; i < fs->e2fs_gcount; i *= 2) {
+	for (i = 1; i < (int)fs->e2fs_gcount; i *= 2) {
 		cg += i;
-		if (cg >= fs->e2fs_gcount)
+		if (cg >= (int)fs->e2fs_gcount)
 			cg -= fs->e2fs_gcount;
 		result = (*allocator)(ip, cg, 0, size);
 		if (result)
@@ -619,12 +463,12 @@ ext2_hashalloc(struct inode *ip, int cg, long pref, int size,
 	 * and 1 is always checked in the quadratic rehash.
 	 */
 	cg = (icg + 2) % fs->e2fs_gcount;
-	for (i = 2; i < fs->e2fs_gcount; i++) {
+	for (i = 2; i < (int)fs->e2fs_gcount; i++) {
 		result = (*allocator)(ip, cg, 0, size);
 		if (result)
 			return (result);
 		cg++;
-		if (cg == fs->e2fs_gcount)
+		if (cg == (int)fs->e2fs_gcount)
 			cg = 0;
 	}
 	return (0);
@@ -640,7 +484,7 @@ static daddr64_t
 ext2_alloccg(struct inode *ip, int cg, daddr64_t bpref, int size)
 {
 	struct m_ext2fs *fs;
-	struct buf *bp;
+	buf_t bp;
 	struct ext2mount *ump;
 	daddr64_t bno, runstart, runlen;
 	int bit, loc, end, error, start;
@@ -651,11 +495,11 @@ ext2_alloccg(struct inode *ip, int cg, daddr64_t bpref, int size)
 	if (fs->e2fs_gd[cg].ext2bgd_nbfree == 0)
 		return (0);
 	EXT2_UNLOCK(ump);
-	error = bread(ip->i_devvp, fsbtodb(fs,
+	error = buf_meta_bread(ip->i_devvp, fsbtodb(fs,
 		fs->e2fs_gd[cg].ext2bgd_b_bitmap),
 		(int)fs->e2fs_bsize, NOCRED, &bp);
 	if (error) {
-		brelse(bp);
+		buf_brelse(bp);
 		EXT2_LOCK(ump);
 		return (0);
 	}
@@ -664,11 +508,11 @@ ext2_alloccg(struct inode *ip, int cg, daddr64_t bpref, int size)
 		 * Another thread allocated the last block in this
 		 * group while we were waiting for the buffer.
 		 */
-		brelse(bp);
+		buf_brelse(bp);
 		EXT2_LOCK(ump);
 		return (0);
 	}
-	bbp = (char *)bp->b_data;
+	bbp = (char *)buf_dataptr(bp);
 
 	if (dtog(fs, bpref) != cg)
 		bpref = 0;
@@ -742,7 +586,7 @@ retry:
 
 	bno = ext2_mapsearch(fs, bbp, bpref);
 	if (bno < 0){
-		brelse(bp);
+		buf_brelse(bp);
 		EXT2_LOCK(ump);
 		return (0);
 	}
@@ -761,7 +605,7 @@ gotit:
 	fs->e2fs_gd[cg].ext2bgd_nbfree--;
 	fs->e2fs_fmod = 1;
 	EXT2_UNLOCK(ump);
-	bdwrite(bp);
+	buf_bdwrite(bp);
 	return (cg * fs->e2fs->e2fs_fpg + fs->e2fs->e2fs_first_dblock + bno);
 }
 
@@ -773,7 +617,7 @@ ext2_clusteralloc(struct inode *ip, int cg, daddr64_t bpref, int len)
 {
 	struct m_ext2fs *fs;
 	struct ext2mount *ump;
-	struct buf *bp;
+	buf_t bp;
 	char *bbp;
 	int bit, error, got, i, loc, run;
 	int32_t *lp;
@@ -786,13 +630,13 @@ ext2_clusteralloc(struct inode *ip, int cg, daddr64_t bpref, int len)
 		return (0);
 
 	EXT2_UNLOCK(ump);
-	error = bread(ip->i_devvp,
+	error = buf_meta_bread(ip->i_devvp,
 	    fsbtodb(fs, fs->e2fs_gd[cg].ext2bgd_b_bitmap),
 	    (int)fs->e2fs_bsize, NOCRED, &bp);
 	if (error)
 		goto fail_lock;
 
-	bbp = (char *)bp->b_data;
+	bbp = (char *)buf_dataptr(bp);
 	EXT2_LOCK(ump);
 	/*
 	 * Check to see if a cluster of the needed size (or bigger) is
@@ -825,7 +669,7 @@ ext2_clusteralloc(struct inode *ip, int cg, daddr64_t bpref, int len)
 		bpref = dtogd(fs, bpref);
 	loc = bpref / NBBY;
 	bit = 1 << (bpref % NBBY);
-	for (run = 0, got = bpref; got < fs->e2fs->e2fs_fpg; got++) {
+	for (run = 0, got = bpref; got < (int)fs->e2fs->e2fs_fpg; got++) {
 		if ((bbp[loc] & bit) != 0)
 			run = 0;
 		else {
@@ -841,7 +685,7 @@ ext2_clusteralloc(struct inode *ip, int cg, daddr64_t bpref, int len)
 		}
 	}
 
-	if (got >= fs->e2fs->e2fs_fpg)
+	if (got >= (int)fs->e2fs->e2fs_fpg)
 		goto fail_lock;
 
 	/* Allocate the cluster that we found. */
@@ -863,13 +707,13 @@ ext2_clusteralloc(struct inode *ip, int cg, daddr64_t bpref, int len)
 	fs->e2fs_fmod = 1;
 	EXT2_UNLOCK(ump);
 
-	bdwrite(bp);
+	buf_bdwrite(bp);
 	return (cg * fs->e2fs->e2fs_fpg + fs->e2fs->e2fs_first_dblock + bno);
 
 fail_lock:
 	EXT2_LOCK(ump);
 fail:
-	brelse(bp);
+	buf_brelse(bp);
 	return (0);
 }
 
@@ -883,7 +727,7 @@ static daddr64_t
 ext2_nodealloccg(struct inode *ip, int cg, daddr64_t ipref, int mode)
 {
 	struct m_ext2fs *fs;
-	struct buf *bp;
+	buf_t bp;
 	struct ext2mount *ump;
 	int error, start, len;
 	char *ibp, *loc;
@@ -895,11 +739,11 @@ ext2_nodealloccg(struct inode *ip, int cg, daddr64_t ipref, int mode)
 	if (fs->e2fs_gd[cg].ext2bgd_nifree == 0)
 		return (0);
 	EXT2_UNLOCK(ump);	
-	error = bread(ip->i_devvp, fsbtodb(fs,
+	error = buf_meta_bread(ip->i_devvp, fsbtodb(fs,
 		fs->e2fs_gd[cg].ext2bgd_i_bitmap),
 		(int)fs->e2fs_bsize, NOCRED, &bp);
 	if (error) {
-		brelse(bp);
+		buf_brelse(bp);
 		EXT2_LOCK(ump);
 		return (0);
 	}
@@ -908,11 +752,11 @@ ext2_nodealloccg(struct inode *ip, int cg, daddr64_t ipref, int mode)
 		 * Another thread allocated the last i-node in this
 		 * group while we were waiting for the buffer.
 		 */
-		brelse(bp);
+		buf_brelse(bp);
 		EXT2_LOCK(ump);
 		return (0);
 	}
-	ibp = (char *)bp->b_data;
+	ibp = (char *)buf_dataptr(bp);
 	if (ipref) {
 		ipref %= fs->e2fs->e2fs_ipg;
 		if (isclr(ibp, ipref))
@@ -944,7 +788,7 @@ gotit:
 		fs->e2fs_total_dir++;
 	}
 	EXT2_UNLOCK(ump);
-	bdwrite(bp);
+	buf_bdwrite(bp);
 	return (cg * fs->e2fs->e2fs_ipg + ipref +1);
 }
 
@@ -956,7 +800,7 @@ void
 ext2_blkfree(struct inode *ip, e4fs_daddr_t bno, long size)
 {
 	struct m_ext2fs *fs;
-	struct buf *bp;
+	buf_t bp;
 	struct ext2mount *ump;
 	int cg, error;
 	char *bbp;
@@ -970,14 +814,14 @@ ext2_blkfree(struct inode *ip, e4fs_daddr_t bno, long size)
 		ext2_fserr(fs, ip->i_uid, "bad block");
 		return;
 	}
-	error = bread(ip->i_devvp,
+	error = buf_meta_bread(ip->i_devvp,
 		fsbtodb(fs, fs->e2fs_gd[cg].ext2bgd_b_bitmap),
 		(int)fs->e2fs_bsize, NOCRED, &bp);
 	if (error) {
-		brelse(bp);
+		buf_brelse(bp);
 		return;
 	}
-	bbp = (char *)bp->b_data;
+	bbp = (char *)buf_dataptr(bp);
 	bno = dtogd(fs, bno);
 	if (isclr(bbp, bno)) {
 		printf("block = %lld, fs = %s\n",
@@ -991,7 +835,7 @@ ext2_blkfree(struct inode *ip, e4fs_daddr_t bno, long size)
 	fs->e2fs_gd[cg].ext2bgd_nbfree++;
 	fs->e2fs_fmod = 1;
 	EXT2_UNLOCK(ump);
-	bdwrite(bp);
+	buf_bdwrite(bp);
 }
 
 /*
@@ -1003,7 +847,7 @@ ext2_vfree(struct vnode *pvp, ino_t ino, int mode)
 {
 	struct m_ext2fs *fs;
 	struct inode *pip;
-	struct buf *bp;
+	buf_t bp;
 	struct ext2mount *ump;
 	int error, cg;
 	char * ibp;
@@ -1016,14 +860,14 @@ ext2_vfree(struct vnode *pvp, ino_t ino, int mode)
 		    pip->i_devvp, (uintmax_t)ino, fs->e2fs_fsmnt);
 
 	cg = ino_to_cg(fs, ino);
-	error = bread(pip->i_devvp,
+	error = buf_meta_bread(pip->i_devvp,
 		fsbtodb(fs, fs->e2fs_gd[cg].ext2bgd_i_bitmap),
 		(int)fs->e2fs_bsize, NOCRED, &bp);
 	if (error) {
-		brelse(bp);
+		buf_brelse(bp);
 		return (0);
 	}
-	ibp = (char *)bp->b_data;
+	ibp = (char *)buf_dataptr(bp);
 	ino = (ino - 1) % fs->e2fs->e2fs_ipg;
 	if (isclr(ibp, ino)) {
 		printf("ino = %llu, fs = %s\n",
@@ -1041,7 +885,7 @@ ext2_vfree(struct vnode *pvp, ino_t ino, int mode)
 	}
 	fs->e2fs_fmod = 1;
 	EXT2_UNLOCK(ump);
-	bdwrite(bp);
+	buf_bdwrite(bp);
 	return (0);
 }
 

@@ -24,14 +24,14 @@ CODESIGN= $(shell xcrun -find -sdk $(SDKROOT) codesign)
 # XNU KPI yet; each one moves from PENDING_CSRCS to CSRCS as it is ported, so the
 # tree builds green at every step and the remaining work is visible here.
 CSRCS:=   ext2fs.c \
+          ext2_alloc.c \
+          ext2_balloc.c \
           ext2_bmap.c \
           ext2_extents.c \
           ext2_inode_cnv.c \
           ext2_subr.c
 
-PENDING_CSRCS:= ext2_alloc.c \
-                ext2_balloc.c \
-                ext2_inode.c \
+PENDING_CSRCS:= ext2_inode.c \
                 ext2_lookup.c \
                 ext2_vfsops.c \
                 ext2_vnops.c
