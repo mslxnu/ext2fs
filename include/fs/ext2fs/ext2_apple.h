@@ -24,6 +24,8 @@
 #include <sys/kernel_types.h>
 #include <sys/vnode.h>
 
+#include <fs/ext2fs/ext2fs.h>	/* EXT2_MIN_BLOCK_LOG_SIZE */
+
 /*
  * Bytes <-> device blocks.
  *
@@ -74,6 +76,11 @@
 	if ((ip)->i_lock != NULL)					\
 		lck_mtx_unlock((ip)->i_lock);				\
 } while (0)
+
+/* Smallest block an ext2 file system may use. */
+#ifndef MINBSIZE
+#define	MINBSIZE	(1 << EXT2_MIN_BLOCK_LOG_SIZE)
+#endif
 
 /* FreeBSD utility macros with no XNU counterpart. */
 #ifndef nitems

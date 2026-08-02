@@ -32,11 +32,11 @@ CSRCS:=   ext2fs.c \
           ext2_inode.c \
           ext2_inode_cnv.c \
           ext2_lookup.c \
-          ext2_subr.c
+          ext2_subr.c \
+          ext2_vnops.c
 
 PENDING_CSRCS:= ext2_readwrite.c \
-                ext2_vfsops.c \
-                ext2_vnops.c
+                ext2_vfsops.c
 
 OBJS:=    $(CSRCS:.c=.o)
 
