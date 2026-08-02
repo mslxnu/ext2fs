@@ -47,62 +47,33 @@ CFLAGS+= -DKEXTNAME_S=\"$(KEXTNAME)\" \
 TIME_STAMP:= $(shell date +'%Y/%m/%d\ %H:%M:%S%z')
 CFLAGS+=     -D__TS__=\"$(TIME_STAMP)\"
 
-# Compile the vendored XNU headers in their kernel-private configuration.
-# These must be defined on the command line (not just in procfs.h) so they
-# are visible to every header from the very first include in each translation
-# unit; otherwise headers like <arm/types.h> are processed before the macros
-# are seen and omit definitions such as user32_t/user64_t.
+# ext2fs builds against the public Kernel.framework KPI only.
+#
+# The sibling procfs kext compiles with the vendored XNU tree under
+# include/xnu and the full set of kernel-private defines, because it walks
+# private structures - struct proc and its file descriptor table - whose layout
+# is not published. A file system needs none of that: vnodes, buffers, mounts
+# and locks are all public KPI, so those headers are deliberately not on the
+# include path here. Relying on them would mean compiling against struct
+# layouts that are not guaranteed to match the running kernel, and referencing
+# symbols the KPI does not export.
+#
 # _KERNEL is the BSD spelling of "this translation unit is kernel code". XNU
 # itself uses KERNEL and never tests _KERNEL (the single occurrence, in
 # sys/queue.h, sits inside an inert "#if NOTFB31"), but the imported ext2fs
 # headers guard their in-kernel halves with it - struct ext2mount and struct
 # inode among them - so without it those types stay incomplete.
+#
+# Note that BSD_KERNEL_PRIVATE in particular must stay off: it makes the SDK's
+# sys/ioctl.h pull in sys/ioctl_compat.h, which includes a sys/ttychars.h that
+# the public SDK does not ship.
 CFLAGS+= -DKERNEL \
          -D_KERNEL \
-         -DPRIVATE \
-         -DKERNEL_PRIVATE \
-         -DXNU_KERNEL_PRIVATE \
-         -DBSD_KERNEL_PRIVATE \
-         -DMACH_KERNEL_PRIVATE \
-         -D__APPLE_API_PRIVATE \
-         -D_DARWIN_C_SOURCE \
-         -DMACH_BSD \
-         -DXNU_TARGET_OS_OSX \
-         -DXNU_PLATFORM_MacOSX
-
-# Match the struct layout of the RELEASE macOS kernel. Several structs the kext
-# dereferences (notably struct proc, whose p_fd lives after these fields) have
-# members guarded by CONFIG_PERSONAS and CONFIG_AUDIT, both of which are enabled
-# in the macOS configuration (config/MASTER.arm64.MacOSX: BSD_BASE has
-# config_personas, SECURITY_BASE has config_audit). Without these the kext's
-# struct proc is short by those fields, p_fd lands at the wrong offset, and
-# &p->p_fd.fd_lock points at garbage -> "Invalid/destroyed mutex" panic.
-# CONFIG_PROC_RESOURCE_LIMITS is intentionally NOT defined: it is DEV/DEBUG-only
-# and off in the release kernel, so leaving it off matches.
-#
-# CONFIG_DTRACE is ON in the shipping macOS kernel (confirmed at runtime via
-# /dev/dtrace, /dev/dtracehelper and the kern.dtrace.* sysctls), so struct proc
-# includes the p_dtrace_* block. The fields after it - p_argslen, p_argc,
-# user_stack (read by the cmdline node) - land at the wrong offset without it.
-# It sits after p_fd/p_uthlist, so enabling it does not disturb fd/ or threads/.
-CFLAGS+= -DCONFIG_PERSONAS \
-         -DCONFIG_AUDIT \
-         -DCONFIG_DTRACE
+         -D_DARWIN_C_SOURCE
 
 ifeq ($(findstring arm64,$(TARGET_TRIPLE)),arm64)
-XNU_INCLUDES := -I../include \
-                -I../include/xnu/bsd \
-                -I../include/xnu/libkern \
-                -I../include/xnu/osfmk \
-                -I../include/xnu/pexpert
 ARCH_SYS_INCLUDES := -isystem $(KERNEL_HEADERS)/arm64 -isystem $(KERNEL_HEADERS)/arm
-CFLAGS += -DAPPLEFIRESTORM
 else
-XNU_INCLUDES := -I../include \
-                -I../include/xnu/bsd \
-                -I../include/xnu/libkern \
-                -I../include/xnu/osfmk \
-                -I../include/xnu/pexpert
 ARCH_SYS_INCLUDES :=
 endif
 
@@ -121,7 +92,7 @@ CFLAGS+= -target $(TARGET_TRIPLE) \
          -I../lib/libsbuf/include \
          -I../lib/libkext/include \
          -I../include/bsdcompat \
-         $(XNU_INCLUDES) \
+         -I../include \
          -isystem $(KERNEL_HEADERS) \
          $(ARCH_SYS_INCLUDES)
 
@@ -135,7 +106,7 @@ CFLAGS+= -Werror -Wall -Wextra \
          -Wno-unused-function \
          -Wno-deprecated-declarations
 
-# CXXFLAGS := $(filter-out -x c -std=gnu99 $(XNU_INCLUDES),$(CFLAGS)) \
+# CXXFLAGS := $(filter-out -x c -std=gnu99,$(CFLAGS)) \
 #            -x c++ -std=gnu++17 -fno-rtti -fno-exceptions -fapple-kext
 
 LDFLAGS+= -target $(TARGET_TRIPLE) \

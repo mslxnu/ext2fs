@@ -22,8 +22,7 @@ CFLAGS+= -target $(TARGET_TRIPLE) \
          -bundle \
          -I../lib \
          -I../include \
-         -I../vendor/libutil \
-         -idirafter ../include/xnu/bsd
+         -I../vendor/libutil
 
 CFLAGS+= -Wall -Wextra -Wno-vla -Wno-nullability-completeness
 
