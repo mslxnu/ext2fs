@@ -77,9 +77,8 @@ static int ext4_ext_read(struct vnop_read_args *);
 static int ext2_ind_read(struct vnop_read_args *);
 
 static vnop_access_t	ext2_access;
-static int ext2_chmod(struct vnode *, int, struct ucred *, struct thread *);
-static int ext2_chown(struct vnode *, uid_t, gid_t, struct ucred *,
-    struct thread *);
+static int ext2_chmod(struct vnode *, int);
+static int ext2_chown(struct vnode *, uid_t, gid_t);
 static vnop_close_t	ext2_close;
 static vnop_create_t	ext2_create;
 static vnop_fsync_t	ext2_fsync;
@@ -269,43 +268,22 @@ ext2_close(struct vnop_close_args *ap)
 	return (0);
 }
 
-static int
-ext2_access(struct vnop_access_args *ap)
-{
-	struct vnode *vp = ap->a_vp;
-	struct inode *ip = VTOI(vp);
-	accmode_t accmode = ap->a_accmode;
-	int error;
+/*
+ * There is deliberately no ext2_access().
+ *
+ * FreeBSD asks the file system to evaluate permissions: its VOP_ACCESS ran
+ * vaccess() over the inode's mode, owner and group. XNU centralises that.
+ * vnode_authorize() does the whole evaluation - POSIX bits, ownership, ACLs
+ * and the immutable flags - from the attributes VNOP_GETATTR reports, and
+ * VNOP_ACCESS is only ever called on file systems that declare their
+ * authentication remote with vfs_setauthopaque(), which a local disk file
+ * system is not.
+ *
+ * So the operation is left out of the vnode operation vector entirely, and
+ * ext2_getattr()'s job is to report va_mode, va_uid, va_gid, va_flags and
+ * va_type faithfully - that is what the authoriser decides on.
+ */
 
-	if (vnode_vtype(vp) == VBLK || vnode_vtype(vp) == VCHR)
-		return (EOPNOTSUPP);
-
-	/*
-	 * Disallow write attempts on read-only file systems;
-	 * unless the file is a socket, fifo, or a block or
-	 * character device resident on the file system.
-	 */
-	if (accmode & VWRITE) {
-		switch (vnode_vtype(vp)) {
-		case VDIR:
-		case VLNK:
-		case VREG:
-			if (vfs_flags(vnode_mount(vp)) & MNT_RDONLY)
-				return (EROFS);
-			break;
-		default:
-			break;
-		}
-	}
-
-	/* If immutable bit set, nobody gets to write it. */
-	if ((accmode & VWRITE) && (ip->i_flags & (SF_IMMUTABLE | SF_SNAPSHOT)))
-		return (EPERM);
-
-	error = vaccess(vnode_vtype(vp), ip->i_mode, ip->i_uid, ip->i_gid,
-	    ap->a_accmode, ap->a_cred, NULL);
-	return (error);
-}
 
 static int
 ext2_getattr(struct vnop_getattr_args *ap)
@@ -369,76 +347,56 @@ ext2_getattr(struct vnop_getattr_args *ap)
 static int
 ext2_setattr(struct vnop_setattr_args *ap)
 {
-	struct vattr *vap = ap->a_vap;
+	struct vnode_attr *vap = ap->a_vap;
 	struct vnode *vp = ap->a_vp;
 	struct inode *ip = VTOI(vp);
-	struct ucred *cred = ap->a_cred;
-	struct thread *td = curthread;
-	int error;
+	vfs_context_t ctx = ap->a_context;
+	int error = 0;
 
 	/*
-	 * Check for unsettable attributes.
+	 * XNU names the attributes the caller wants changed rather than
+	 * marking the rest VNOVAL, so VATTR_IS_ACTIVE replaces the old
+	 * comparisons, and every field acted on is reported back with
+	 * VATTR_SET_SUPPORTED so the caller knows it took effect.
+	 *
+	 * All of FreeBSD's permission arithmetic is gone from this function.
+	 * vnode_authorize() has already decided that the caller may change
+	 * these attributes - including the privileged cases around the system
+	 * flags, which it evaluates from the va_flags that ext2_getattr()
+	 * reports - so repeating it here would be duplicated policy, and
+	 * duplicated policy is how the two drift apart.
 	 */
-	if ((vap->va_type != VNON) || (vap->va_nlink != VNOVAL) ||
-	    (vap->va_fsid != VNOVAL) || (vap->va_fileid != VNOVAL) ||
-	    (vap->va_blocksize != VNOVAL) || (vap->va_rdev != VNOVAL) ||
-	    ((int)vap->va_bytes != VNOVAL) || (vap->va_gen != VNOVAL)) {
-		return (EINVAL);
-	}
-	if (vap->va_flags != VNOVAL) {
+	if (VATTR_IS_ACTIVE(vap, va_flags)) {
 		/* Disallow flags not supported by ext2fs. */
-		if(vap->va_flags & ~(SF_APPEND | SF_IMMUTABLE | UF_NODUMP))
+		if (vap->va_flags & ~(SF_APPEND | SF_IMMUTABLE | UF_NODUMP))
 			return (EOPNOTSUPP);
-
 		if (vfs_flags(vnode_mount(vp)) & MNT_RDONLY)
 			return (EROFS);
-		/*
-		 * Callers may only modify the file flags on objects they
-		 * have VADMIN rights for.
-		 */
-		if ((error = VOP_ACCESS(vp, VADMIN, cred, td)))
-			return (error);
-		/*
-		 * Unprivileged processes and privileged processes in
-		 * jail() are not permitted to unset system flags, or
-		 * modify flags if any system flags are set.
-		 * Privileged non-jail processes may not modify system flags
-		 * if securelevel > 0 and any existing system flags are set.
-		 */
-		if (!priv_check_cred(cred, PRIV_VFS_SYSFLAGS, 0)) {
-			if (ip->i_flags & (SF_IMMUTABLE | SF_APPEND)) {
-				error = securelevel_gt(cred, 0);
-				if (error)
-					return (error);
-			}
-		} else {
-			if (ip->i_flags & (SF_IMMUTABLE | SF_APPEND) ||
-			    ((vap->va_flags ^ ip->i_flags) & SF_SETTABLE))
-				return (EPERM);
-		}
+
 		ip->i_flags = vap->va_flags;
 		ip->i_flag |= IN_CHANGE;
+		VATTR_SET_SUPPORTED(vap, va_flags);
 		if (ip->i_flags & (IMMUTABLE | APPEND))
 			return (0);
 	}
 	if (ip->i_flags & (IMMUTABLE | APPEND))
 		return (EPERM);
-	/*
-	 * Go through the fields and update iff not VNOVAL.
-	 */
-	if (vap->va_uid != (uid_t)VNOVAL || vap->va_gid != (gid_t)VNOVAL) {
+
+	if (VATTR_IS_ACTIVE(vap, va_uid) || VATTR_IS_ACTIVE(vap, va_gid)) {
+		uid_t uid = VATTR_IS_ACTIVE(vap, va_uid) ?
+		    vap->va_uid : (uid_t)VNOVAL;
+		gid_t gid = VATTR_IS_ACTIVE(vap, va_gid) ?
+		    vap->va_gid : (gid_t)VNOVAL;
+
 		if (vfs_flags(vnode_mount(vp)) & MNT_RDONLY)
 			return (EROFS);
-		if ((error = ext2_chown(vp, vap->va_uid, vap->va_gid, cred,
-		    td)) != 0)
+		if ((error = ext2_chown(vp, uid, gid)) != 0)
 			return (error);
+		VATTR_SET_SUPPORTED(vap, va_uid);
+		VATTR_SET_SUPPORTED(vap, va_gid);
 	}
-	if (vap->va_size != VNOVAL) {
-		/*
-		 * Disallow write attempts on read-only file systems;
-		 * unless the file is a socket, fifo, or a block or
-		 * character device resident on the file system.
-		 */
+
+	if (VATTR_IS_ACTIVE(vap, va_data_size)) {
 		switch (vnode_vtype(vp)) {
 		case VDIR:
 			return (EISDIR);
@@ -450,49 +408,61 @@ ext2_setattr(struct vnop_setattr_args *ap)
 		default:
 			break;
 		}
-		if ((error = ext2_truncate(vp, vap->va_size, 0, cred, td)) != 0)
+		error = ext2_truncate(vp, (off_t)vap->va_data_size, 0,
+		    vfs_context_ucred(ctx), NULL);
+		if (error != 0)
 			return (error);
+		VATTR_SET_SUPPORTED(vap, va_data_size);
 	}
-	if (vap->va_atime.tv_sec != VNOVAL || vap->va_mtime.tv_sec != VNOVAL) {
+
+	if (VATTR_IS_ACTIVE(vap, va_access_time) ||
+	    VATTR_IS_ACTIVE(vap, va_modify_time) ||
+	    VATTR_IS_ACTIVE(vap, va_create_time)) {
 		if (vfs_flags(vnode_mount(vp)) & MNT_RDONLY)
 			return (EROFS);
 		/*
-		 * From utimes(2):
-		 * If times is NULL, ... The caller must be the owner of
-		 * the file, have permission to write the file, or be the
-		 * super-user.
-		 * If times is non-NULL, ... The caller must be the owner of
-		 * the file or be the super-user.
+		 * FreeBSD distinguished utimes(NULL) - which only needs write
+		 * permission - from an explicit timestamp, which needs
+		 * ownership. XNU draws that distinction in the authoriser
+		 * before getting here.
 		 */
-		if ((error = VOP_ACCESS(vp, VADMIN, cred, td)) &&
-		    ((vap->va_vaflags & VA_UTIMES_NULL) == 0 ||
-		    (error = VOP_ACCESS(vp, VWRITE, cred, td))))
-			return (error);
-		if (vap->va_atime.tv_sec != VNOVAL)
+		if (VATTR_IS_ACTIVE(vap, va_access_time))
 			ip->i_flag |= IN_ACCESS;
-		if (vap->va_mtime.tv_sec != VNOVAL)
+		if (VATTR_IS_ACTIVE(vap, va_modify_time))
 			ip->i_flag |= IN_CHANGE | IN_UPDATE;
 		ext2_itimes(vp);
-		if (vap->va_atime.tv_sec != VNOVAL) {
-			ip->i_atime = vap->va_atime.tv_sec;
-			ip->i_atimensec = vap->va_atime.tv_nsec;
+		if (VATTR_IS_ACTIVE(vap, va_access_time)) {
+			ip->i_atime = (int32_t)vap->va_access_time.tv_sec;
+			ip->i_atimensec = (int32_t)vap->va_access_time.tv_nsec;
+			VATTR_SET_SUPPORTED(vap, va_access_time);
 		}
-		if (vap->va_mtime.tv_sec != VNOVAL) {
-			ip->i_mtime = vap->va_mtime.tv_sec;
-			ip->i_mtimensec = vap->va_mtime.tv_nsec;
+		if (VATTR_IS_ACTIVE(vap, va_modify_time)) {
+			ip->i_mtime = (int32_t)vap->va_modify_time.tv_sec;
+			ip->i_mtimensec = (int32_t)vap->va_modify_time.tv_nsec;
+			VATTR_SET_SUPPORTED(vap, va_modify_time);
 		}
-		ip->i_birthtime = vap->va_birthtime.tv_sec;
-		ip->i_birthnsec = vap->va_birthtime.tv_nsec;
-		error = ext2_update(vp, 0);
-		if (error)
+		/*
+		 * Only the later inode layouts have somewhere to keep a
+		 * creation time; on revision 0 it is silently not supported
+		 * rather than written into a field that does not exist.
+		 */
+		if (VATTR_IS_ACTIVE(vap, va_create_time) && E2DI_HAS_XTIME(ip)) {
+			ip->i_birthtime = (int32_t)vap->va_create_time.tv_sec;
+			ip->i_birthnsec = (int32_t)vap->va_create_time.tv_nsec;
+			VATTR_SET_SUPPORTED(vap, va_create_time);
+		}
+		if ((error = ext2_update(vp, 0)) != 0)
 			return (error);
 	}
-	error = 0;
-	if (vap->va_mode != (mode_t)VNOVAL) {
+
+	if (VATTR_IS_ACTIVE(vap, va_mode)) {
 		if (vfs_flags(vnode_mount(vp)) & MNT_RDONLY)
 			return (EROFS);
-		error = ext2_chmod(vp, (int)vap->va_mode, cred, td);
+		if ((error = ext2_chmod(vp, (int)vap->va_mode)) != 0)
+			return (error);
+		VATTR_SET_SUPPORTED(vap, va_mode);
 	}
+
 	return (error);
 }
 
@@ -500,33 +470,20 @@ ext2_setattr(struct vnop_setattr_args *ap)
  * Change the mode on a file.
  * Inode must be locked before calling.
  */
+/*
+ * Change the mode on a file.
+ *
+ * The permission checks FreeBSD made here - VADMIN on the file, and privilege
+ * for the sticky and setgid bits - are gone. XNU's vnode_authorize() has
+ * already decided the caller may write the mode by the time VNOP_SETATTR is
+ * reached, and it applies its own rules to the setuid and setgid bits. What
+ * is left is applying the change.
+ */
 static int
-ext2_chmod(struct vnode *vp, int mode, struct ucred *cred, struct thread *td)
+ext2_chmod(struct vnode *vp, int mode)
 {
 	struct inode *ip = VTOI(vp);
-	int error;
 
-	/*
-	 * To modify the permissions on a file, must possess VADMIN
-	 * for that file.
-	 */
-	if ((error = VOP_ACCESS(vp, VADMIN, cred, td)))
-		return (error);
-	/*
-	 * Privileged processes may set the sticky bit on non-directories,
-	 * as well as set the setgid bit on a file with a group that the
-	 * process is not a member of.
-	 */
-	if (vnode_vtype(vp) != VDIR && (mode & S_ISTXT)) {
-		error = priv_check_cred(cred, PRIV_VFS_STICKYFILE, 0);
-		if (error)
-			return (EFTYPE);
-	}
-	if (!groupmember(ip->i_gid, cred) && (mode & ISGID)) {
-		error = priv_check_cred(cred, PRIV_VFS_SETGID, 0);
-		if (error)
-			return (error);
-	}
 	ip->i_mode &= ~ALLPERMS;
 	ip->i_mode |= (mode & ALLPERMS);
 	ip->i_flag |= IN_CHANGE;
@@ -534,48 +491,34 @@ ext2_chmod(struct vnode *vp, int mode, struct ucred *cred, struct thread *td)
 }
 
 /*
- * Perform chown operation on inode ip;
- * inode must be locked prior to call.
+ * Change the owner and group of a file.
+ *
+ * As with ext2_chmod(), authorisation has already happened. The one rule kept
+ * is clearing the setuid and setgid bits when ownership actually moves: that
+ * is not a permission check but a security property of the change itself, and
+ * losing it would leave a setuid binary owned by whoever it was given to.
  */
 static int
-ext2_chown(struct vnode *vp, uid_t uid, gid_t gid, struct ucred *cred,
-    struct thread *td)
+ext2_chown(struct vnode *vp, uid_t uid, gid_t gid)
 {
 	struct inode *ip = VTOI(vp);
 	uid_t ouid;
 	gid_t ogid;
-	int error = 0;
 
 	if (uid == (uid_t)VNOVAL)
 		uid = ip->i_uid;
 	if (gid == (gid_t)VNOVAL)
 		gid = ip->i_gid;
-	/*
-	 * To modify the ownership of a file, must possess VADMIN
-	 * for that file.
-	 */
-	if ((error = VOP_ACCESS(vp, VADMIN, cred, td)))
-		return (error);
-	/*
-	 * To change the owner of a file, or change the group of a file
-	 * to a group of which we are not a member, the caller must
-	 * have privilege.
-	 */
-	if (uid != ip->i_uid || (gid != ip->i_gid &&
-	    !groupmember(gid, cred))) {
-		error = priv_check_cred(cred, PRIV_VFS_CHOWN, 0);
-		if (error)
-			return (error);
-	}
+
 	ogid = ip->i_gid;
 	ouid = ip->i_uid;
 	ip->i_gid = gid;
 	ip->i_uid = uid;
 	ip->i_flag |= IN_CHANGE;
-	if ((ip->i_mode & (ISUID | ISGID)) && (ouid != uid || ogid != gid)) {
-		if (priv_check_cred(cred, PRIV_VFS_RETAINSUGID, 0) != 0)
-			ip->i_mode &= ~(ISUID | ISGID);
-	}
+
+	if ((ip->i_mode & (ISUID | ISGID)) && (ouid != uid || ogid != gid))
+		ip->i_mode &= ~(ISUID | ISGID);
+
 	return (0);
 }
 
@@ -841,8 +784,13 @@ abortit:
 	 * to namei, as the parent directory is unlocked by the
 	 * call to checkpath().
 	 */
-	error = VOP_ACCESS(fvp, VWRITE, tvfs_context_ucred(ap->a_context), tcnp->cn_thread);
-	VOP_UNLOCK(fvp, 0);
+	/*
+	 * FreeBSD checked write permission on the source here, because it was
+	 * about to rewrite the ".." entry of a directory being moved. XNU
+	 * authorises the rename as a whole before the vnop runs, so the check
+	 * is the vfs layer's; error stays 0 for the test below.
+	 */
+	error = 0;
 	if (oldparent != dp->i_number)
 		newparent = dp->i_number;
 	if (doingdirectory && newparent) {
@@ -1125,7 +1073,7 @@ ext2_mkdir(struct vnop_mkdir_args *ap)
 			dmode |= ISUID;
 			ip->i_uid = dp->i_uid;
 		} else {
-			ip->i_uid = vfs_context_ucred(ap->a_context)->cr_uid;
+			ip->i_uid = kauth_cred_getuid(vfs_context_ucred(ap->a_context));
 		}
 	}
 #else
@@ -1571,10 +1519,21 @@ ext2_makeinode(int mode, struct vnode *dvp, struct vnode **vpp,
 #endif
 	ip->i_flag |= IN_ACCESS | IN_CHANGE | IN_UPDATE;
 	ip->i_mode = mode;
-	vnode_vtype(tvp) = IFTOVT(mode);	/* Rest init'd in getnewvnode(). */
+	/* The vnode's type is set when it is created, in ext2_vget(). */
 	ip->i_nlink = 1;
-	if ((ip->i_mode & ISGID) && !groupmember(ip->i_gid, vfs_context_ucred(ap->a_context))) {
-		if (priv_check_cred(vfs_context_ucred(ap->a_context), PRIV_VFS_RETAINSUGID, 0))
+	/*
+	 * A new inode inherits its group from the parent directory, so it can
+	 * come out setgid for a group the creator does not belong to. Strip the
+	 * bit in that case. This is a property of creating the file rather than
+	 * a permission check on an existing one, so unlike the rest of the
+	 * access rules it stays with the file system; kauth_cred_ismember_gid()
+	 * is XNU's group test, and a failed query is treated as "not a member".
+	 */
+	if (ip->i_mode & ISGID) {
+		int ismember = 0;
+
+		if (kauth_cred_ismember_gid(vfs_context_ucred(ap->a_context),
+		    (gid_t)ip->i_gid, &ismember) != 0 || !ismember)
 			ip->i_mode &= ~ISGID;
 	}
 
