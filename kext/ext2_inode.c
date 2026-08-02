@@ -569,6 +569,11 @@ ext2_reclaim(struct vnop_reclaim_args *ap)
 	 */
 	ext2_ihashrem(ip);
 
+	if (ip->i_lock != NULL) {
+		lck_mtx_free(ip->i_lock, ext2_lck_grp);
+		ip->i_lock = NULL;
+	}
+
 	/*
 	 * Detach before freeing: after this the vnode has no file system data,
 	 * which is what XNU expects of a reclaimed vnode. vnode_destroy_vobject

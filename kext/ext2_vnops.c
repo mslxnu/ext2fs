@@ -71,90 +71,77 @@
 #include <fs/ext2fs/ext2_mount.h>
 #include <fs/ext2fs/ext2_apple.h>
 
-static int ext2_makeinode(int mode, struct vnode *, struct vnode **, struct componentname *);
+static int ext2_makeinode(int mode, struct vnode *, struct vnode **,
+		    struct componentname *, vfs_context_t);
 static void ext2_itimes_locked(struct vnode *);
 static int ext4_ext_read(struct vnop_read_args *);
 static int ext2_ind_read(struct vnop_read_args *);
 
-static vnop_access_t	ext2_access;
-static int ext2_chmod(struct vnode *, int);
-static int ext2_chown(struct vnode *, uid_t, gid_t);
-static vnop_close_t	ext2_close;
-static vnop_create_t	ext2_create;
-static vnop_fsync_t	ext2_fsync;
-static vnop_getattr_t	ext2_getattr;
-static vnop_ioctl_t	ext2_ioctl;
-static vnop_link_t	ext2_link;
-static vnop_mkdir_t	ext2_mkdir;
-static vnop_mknod_t	ext2_mknod;
-static vnop_open_t	ext2_open;
-static vnop_pathconf_t	ext2_pathconf;
-static vnop_print_t	ext2_print;
-static vnop_read_t	ext2_read;
-static vnop_readlink_t	ext2_readlink;
-static vnop_remove_t	ext2_remove;
-static vnop_rename_t	ext2_rename;
-static vnop_rmdir_t	ext2_rmdir;
-static vnop_setattr_t	ext2_setattr;
-static vnop_strategy_t	ext2_strategy;
-static vnop_symlink_t	ext2_symlink;
-static vnop_write_t	ext2_write;
-static vnop_vptofh_t	ext2_vptofh;
-static vnop_close_t	ext2fifo_close;
-static vnop_kqfilter_t	ext2fifo_kqfilter;
+/*
+ * The vnode operation vector.
+ *
+ * XNU builds this from an array of descriptor/implementation pairs and
+ * resolves it at registration time, rather than from a designated-initialiser
+ * struct. Operations left out fall through to vnop_default, which returns
+ * ENOTSUP - that is how the file data path stays absent until
+ * ext2_readwrite.c is ported, and how the operations FreeBSD had but XNU has
+ * no counterpart for simply disappear.
+ *
+ * Three FreeBSD entries have no equivalent at all:
+ *
+ *   vop_access      - XNU authorises in the vfs layer; see the note where
+ *                     ext2_access used to be.
+ *   vop_reallocblks - there is no VNOP_REALLOCBLKS; it went with the
+ *                     implementation in ext2_alloc.c.
+ *   vop_print       - there is no VNOP_PRINT.
+ *
+ * vop_vptofh becomes a VFS operation on XNU and moves to ext2_vfsops.c, and
+ * vop_cachedlookup and vop_lookup collapse into the single VNOP_LOOKUP that
+ * ext2_lookup implements.
+ */
+#define	VOPFUNC	int (*)(void *)
 
-/* Global vfs data structures for ext2. */
-struct vop_vector ext2_vnodeops = {
-	.vop_default =		&default_vnodeops,
-	.vop_access =		ext2_access,
-	.vop_bmap =		ext2_bmap,
-	.vop_cachedlookup =	ext2_lookup,
-	.vop_close =		ext2_close,
-	.vop_create =		ext2_create,
-	.vop_fsync =		ext2_fsync,
-	.vop_getpages =		vnode_pager_local_getpages,
-	.vop_getpages_async =	vnode_pager_local_getpages_async,
-	.vop_getattr =		ext2_getattr,
-	.vop_inactive =		ext2_inactive,
-	.vop_ioctl =		ext2_ioctl,
-	.vop_link =		ext2_link,
-	.vop_lookup =		vfs_cache_lookup,
-	.vop_mkdir =		ext2_mkdir,
-	.vop_mknod =		ext2_mknod,
-	.vop_open =		ext2_open,
-	.vop_pathconf =		ext2_pathconf,
-	.vop_poll =		vop_stdpoll,
-	.vop_print =		ext2_print,
-	.vop_read =		ext2_read,
-	.vop_readdir =		ext2_readdir,
-	.vop_readlink =		ext2_readlink,
-	.vop_reallocblks =	ext2_reallocblks,
-	.vop_reclaim =		ext2_reclaim,
-	.vop_remove =		ext2_remove,
-	.vop_rename =		ext2_rename,
-	.vop_rmdir =		ext2_rmdir,
-	.vop_setattr =		ext2_setattr,
-	.vop_strategy =		ext2_strategy,
-	.vop_symlink =		ext2_symlink,
-	.vop_write =		ext2_write,
-	.vop_vptofh =		ext2_vptofh,
+int (**ext2_vnodeop_p)(void *);
+
+static struct vnodeopv_entry_desc ext2_vnodeop_entries[] = {
+	{ .opve_op = &vnop_default_desc,   .opve_impl = (VOPFUNC)vn_default_error },
+	{ .opve_op = &vnop_lookup_desc,    .opve_impl = (VOPFUNC)ext2_lookup },
+	{ .opve_op = &vnop_create_desc,    .opve_impl = (VOPFUNC)ext2_create },
+	{ .opve_op = &vnop_mknod_desc,     .opve_impl = (VOPFUNC)ext2_mknod },
+	{ .opve_op = &vnop_open_desc,      .opve_impl = (VOPFUNC)ext2_open },
+	{ .opve_op = &vnop_close_desc,     .opve_impl = (VOPFUNC)ext2_close },
+	{ .opve_op = &vnop_getattr_desc,   .opve_impl = (VOPFUNC)ext2_getattr },
+	{ .opve_op = &vnop_setattr_desc,   .opve_impl = (VOPFUNC)ext2_setattr },
+	{ .opve_op = &vnop_ioctl_desc,     .opve_impl = (VOPFUNC)ext2_ioctl },
+	{ .opve_op = &vnop_fsync_desc,     .opve_impl = (VOPFUNC)ext2_fsync },
+	{ .opve_op = &vnop_remove_desc,    .opve_impl = (VOPFUNC)ext2_remove },
+	{ .opve_op = &vnop_link_desc,      .opve_impl = (VOPFUNC)ext2_link },
+	{ .opve_op = &vnop_rename_desc,    .opve_impl = (VOPFUNC)ext2_rename },
+	{ .opve_op = &vnop_mkdir_desc,     .opve_impl = (VOPFUNC)ext2_mkdir },
+	{ .opve_op = &vnop_rmdir_desc,     .opve_impl = (VOPFUNC)ext2_rmdir },
+	{ .opve_op = &vnop_symlink_desc,   .opve_impl = (VOPFUNC)ext2_symlink },
+	{ .opve_op = &vnop_readdir_desc,   .opve_impl = (VOPFUNC)ext2_readdir },
+	{ .opve_op = &vnop_readlink_desc,  .opve_impl = (VOPFUNC)ext2_readlink },
+	{ .opve_op = &vnop_inactive_desc,  .opve_impl = (VOPFUNC)ext2_inactive },
+	{ .opve_op = &vnop_reclaim_desc,   .opve_impl = (VOPFUNC)ext2_reclaim },
+	{ .opve_op = &vnop_pathconf_desc,  .opve_impl = (VOPFUNC)ext2_pathconf },
+	{ .opve_op = &vnop_blockmap_desc,  .opve_impl = (VOPFUNC)ext2_blockmap },
+	{ .opve_op = &vnop_strategy_desc,  .opve_impl = (VOPFUNC)ext2_strategy },
+	{ .opve_op = (struct vnodeop_desc *)NULL, .opve_impl = (VOPFUNC)NULL }
 };
 
-struct vop_vector ext2_fifoops = {
-	.vop_default =		&fifo_specops,
-	.vop_access =		ext2_access,
-	.vop_close =		ext2fifo_close,
-	.vop_fsync =		ext2_fsync,
-	.vop_getattr =		ext2_getattr,
-	.vop_inactive =		ext2_inactive,
-	.vop_kqfilter =		ext2fifo_kqfilter,
-	.vop_print =		ext2_print,
-	.vop_read =		VOP_PANIC,
-	.vop_reclaim =		ext2_reclaim,
-	.vop_setattr =		ext2_setattr,
-	.vop_write =		VOP_PANIC,
-	.vop_vptofh =		ext2_vptofh,
+struct vnodeopv_desc ext2fs_vnodeop_opv_desc = {
+	.opv_desc_vector_p = &ext2_vnodeop_p,
+	.opv_desc_ops = ext2_vnodeop_entries,
 };
+
+/*
+ * FIFOs and device nodes take the system's own operation vectors, not the
+ * file system's. FreeBSD layered ext2_fifoops over fifo_specops so it could
+ * keep an inode's timestamps current on close; XNU has no per-file-system
+ * fifo vector to layer onto, and routes those vnodes to its own fifo and spec
+ * vnops when ext2_vget() creates them with the matching vtype.
+ */
 
 /*
  * A virgin directory (no blushing please).
@@ -177,7 +164,6 @@ ext2_itimes_locked(struct vnode *vp)
 	struct inode *ip;
 	struct timespec ts;
 
-	ASSERT_VI_LOCKED(vp, __func__);	
 
 	ip = VTOI(vp);
 	if ((ip->i_flag & (IN_ACCESS | IN_CHANGE | IN_UPDATE)) == 0)
@@ -187,7 +173,7 @@ ext2_itimes_locked(struct vnode *vp)
 	else
 		ip->i_flag |= IN_MODIFIED;
 	if ((vfs_flags(vnode_mount(vp)) & MNT_RDONLY) == 0) {
-		vfs_timestamp(&ts);
+		nanotime(&ts);
 		if (ip->i_flag & IN_ACCESS) {
 			ip->i_atime = ts.tv_sec;
 			ip->i_atimensec = ts.tv_nsec;
@@ -209,9 +195,9 @@ void
 ext2_itimes(struct vnode *vp)
 {
 
-	VI_LOCK(vp);
+	EXT2_ILOCK(VTOI(vp));
 	ext2_itimes_locked(vp);
-	VI_UNLOCK(vp);
+	EXT2_IUNLOCK(VTOI(vp));
 }
 
 /*
@@ -224,7 +210,7 @@ ext2_create(struct vnop_create_args *ap)
 
 	error =
 	    ext2_makeinode(MAKEIMODE(ap->a_vap->va_type, ap->a_vap->va_mode),
-	    ap->a_dvp, ap->a_vpp, ap->a_cnp);
+	    ap->a_dvp, ap->a_vpp, ap->a_cnp, ap->a_context);
 	if (error != 0)
 		return (error);
 	if ((ap->a_cnp->cn_flags & MAKEENTRY) != 0)
@@ -261,10 +247,15 @@ ext2_close(struct vnop_close_args *ap)
 {
 	struct vnode *vp = ap->a_vp;
 
-	VI_LOCK(vp);
-	if (vp->v_usecount > 1)
-		ext2_itimes_locked(vp);
-	VI_UNLOCK(vp);
+	/*
+	 * FreeBSD only refreshed the timestamps when another reference to the
+	 * vnode remained, reading v_usecount under the vnode interlock. XNU
+	 * publishes neither, and the update is cheap, so it is done
+	 * unconditionally under the inode's own lock.
+	 */
+	EXT2_ILOCK(VTOI(vp));
+	ext2_itimes_locked(vp);
+	EXT2_IUNLOCK(VTOI(vp));
 	return (0);
 }
 
@@ -545,35 +536,48 @@ ext2_fsync(struct vnop_fsync_args *ap)
 static int
 ext2_mknod(struct vnop_mknod_args *ap)
 {
-	struct vattr *vap = ap->a_vap;
+	struct vnode_attr *vap = ap->a_vap;
 	struct vnode **vpp = ap->a_vpp;
 	struct inode *ip;
 	ino_t ino;
 	int error;
 
 	error = ext2_makeinode(MAKEIMODE(vap->va_type, vap->va_mode),
-	    ap->a_dvp, vpp, ap->a_cnp);
+	    ap->a_dvp, vpp, ap->a_cnp, ap->a_context);
 	if (error)
 		return (error);
 	ip = VTOI(*vpp);
 	ip->i_flag |= IN_ACCESS | IN_CHANGE | IN_UPDATE;
-	if (vap->va_rdev != VNOVAL) {
+	if (VATTR_IS_ACTIVE(vap, va_rdev)) {
 		/*
 		 * Want to be able to use this to make badblock
 		 * inodes, so don't truncate the dev number.
 		 */
 		ip->i_rdev = vap->va_rdev;
+		VATTR_SET_SUPPORTED(vap, va_rdev);
 	}
+
 	/*
-	 * Remove inode, then reload it through VFS_VGET so it is
-	 * checked to see if it is an alias of an existing entry in
-	 * the inode cache.	 XXX I don't believe this is necessary now.
+	 * The vnode ext2_makeinode() produced was created before i_rdev was
+	 * known, so it does not describe a device. Write the inode out, drop
+	 * the vnode and fetch it again: ext2_vget() builds the vnode from the
+	 * on-disk inode and will give it the right type and device number.
+	 *
+	 * FreeBSD did the same thing with vgone() plus VFS_VGET, to have the
+	 * result checked for an alias in the device vnode cache. On XNU that
+	 * aliasing is the vnode layer's business, handled inside
+	 * vnode_create(); recycling is only needed here to rebuild the vnode
+	 * from an inode that has since changed type.
 	 */
-	(*vpp)->v_type = VNON;
-	ino = ip->i_number;	/* Save this before vgone() invalidates ip. */
-	vgone(*vpp);
+	if ((error = ext2_update(*vpp, 1)) != 0) {
+		vnode_put(*vpp);
+		*vpp = NULL;
+		return (error);
+	}
+	ino = ip->i_number;
+	vnode_recycle(*vpp);
 	vnode_put(*vpp);
-	error = VFS_VGET(vnode_mount(ap->a_dvp), ino, LK_EXCLUSIVE, vpp);
+	error = ext2_vget(vnode_mount(ap->a_dvp), ino, vpp, ap->a_context);
 	if (error) {
 		*vpp = NULL;
 		return (error);
@@ -720,18 +724,14 @@ abortit:
 		goto abortit;
 	}
 
-	if ((error = vn_lock(fvp, LK_EXCLUSIVE)) != 0)
-		goto abortit;
 	dp = VTOI(fdvp);
 	ip = VTOI(fvp);
 	if (ip->i_nlink >= EXT2_LINK_MAX) {
-		VOP_UNLOCK(fvp, 0);
 		error = EMLINK;
 		goto abortit;
 	}
 	if ((ip->i_flags & (NOUNLINK | IMMUTABLE | APPEND))
 	    || (dp->i_flags & APPEND)) {
-		VOP_UNLOCK(fvp, 0);
 		error = EPERM;
 		goto abortit;
 	}
@@ -742,7 +742,6 @@ abortit:
 		if ((fcnp->cn_namelen == 1 && fcnp->cn_nameptr[0] == '.') ||
 		    dp == ip || (fcnp->cn_flags | tcnp->cn_flags) & ISDOTDOT ||
 		    (ip->i_flag & IN_RENAME)) {
-			VOP_UNLOCK(fvp, 0);
 			error = EINVAL;
 			goto abortit;
 		}
@@ -770,7 +769,6 @@ abortit:
 	ip->i_nlink++;
 	ip->i_flag |= IN_CHANGE;
 	if ((error = ext2_update(fvp, !DOINGASYNC(fvp))) != 0) {
-		VOP_UNLOCK(fvp, 0);
 		goto bad;
 	}
 
@@ -796,20 +794,20 @@ abortit:
 	if (doingdirectory && newparent) {
 		if (error)	/* write access check above */
 			goto bad;
-		if (xp != NULL)
-			vnode_put(tvp);
-		error = ext2_checkpath(ip, dp, tvfs_context_ucred(ap->a_context));
+		/*
+		 * FreeBSD released the target here and re-resolved the name
+		 * afterwards, because checkpath() walked the tree with the
+		 * parent unlocked and anything could have moved meanwhile.
+		 *
+		 * XNU holds an iocount on all four vnodes for the whole of
+		 * VNOP_RENAME and never drops them, so nothing is released
+		 * across the walk and there is nothing to re-resolve. The
+		 * vnodes and inode pointers stay valid.
+		 */
+		error = ext2_checkpath(ip, dp,
+		    vfs_context_ucred(ap->a_context), ap->a_context);
 		if (error)
 			goto out;
-		vnode_get(tdvp);
-		error = relookup(tdvp, &tvp, tcnp);
-		if (error)
-			goto out;
-		vnode_put(tdvp);
-		dp = VTOI(tdvp);
-		xp = NULL;
-		if (tvp)
-			xp = VTOI(tvp);
 	}
 	/*
 	 * 2) If target doesn't exist, link the target
@@ -861,9 +859,9 @@ abortit:
 		 * otherwise the destination may not be changed (except by
 		 * root). This implements append-only directories.
 		 */
-		if ((dp->i_mode & S_ISTXT) && tvfs_context_ucred(ap->a_context)->cr_uid != 0 &&
-		    tvfs_context_ucred(ap->a_context)->cr_uid != dp->i_uid &&
-		    xp->i_uid != tvfs_context_ucred(ap->a_context)->cr_uid) {
+		if ((dp->i_mode & S_ISTXT) && kauth_cred_getuid(vfs_context_ucred(ap->a_context)) != 0 &&
+		    kauth_cred_getuid(vfs_context_ucred(ap->a_context)) != dp->i_uid &&
+		    xp->i_uid != kauth_cred_getuid(vfs_context_ucred(ap->a_context))) {
 			error = EPERM;
 			goto bad;
 		}
@@ -873,7 +871,7 @@ abortit:
 		 * (both directories, or both not directories).
 		 */
 		if ((xp->i_mode&IFMT) == IFDIR) {
-			if (! ext2_dirempty(xp, dp->i_number, tvfs_context_ucred(ap->a_context)) || 
+			if (! ext2_dirempty(xp, dp->i_number, vfs_context_ucred(ap->a_context)) || 
 			    xp->i_nlink > 2) {
 				error = ENOTEMPTY;
 				goto bad;
@@ -916,7 +914,7 @@ abortit:
 			if (--xp->i_nlink != 0)
 				panic("ext2_rename: linked directory");
 			error = ext2_truncate(tvp, (off_t)0, IO_SYNC,
-			    tvfs_context_ucred(ap->a_context), tcnp->cn_thread);
+			    vfs_context_ucred(ap->a_context), NULL);
 		}
 		xp->i_flag |= IN_CHANGE;
 		vnode_put(tvp);
@@ -926,24 +924,15 @@ abortit:
 	/*
 	 * 3) Unlink the source.
 	 */
-	fcnp->cn_flags &= ~MODMASK;
-	fcnp->cn_flags |= LOCKPARENT | LOCKLEAF;
-	vnode_get(fdvp);
-	error = relookup(fdvp, &fvp, fcnp);
-	if (error == 0)
-		vnode_put(fdvp);
-	if (fvp != NULL) {
-		xp = VTOI(fvp);
-		dp = VTOI(fdvp);
-	} else {
-		/*
-		 * From name has disappeared.
-		 */
-		if (doingdirectory)
-			panic("ext2_rename: lost dir entry");
-		vnode_put(ap->a_fvp);
-		return (0);
-	}
+	/*
+	 * FreeBSD re-resolved the source name here for the same reason as
+	 * above - its locks had been dropped, so the entry might no longer be
+	 * the one it started with. The iocounts XNU holds mean fvp and fdvp
+	 * are still the vnodes the caller named, so the lookup is dropped and
+	 * the inodes are taken directly.
+	 */
+	xp = VTOI(fvp);
+	dp = VTOI(fdvp);
 	/*
 	 * Ensure that the directory entry still exists and has not
 	 * changed while the new name has been entered. If the source is
@@ -970,7 +959,7 @@ abortit:
 			error = vn_rdwr(UIO_READ, fvp, (caddr_t)&dirbuf,
 				sizeof(struct ext2fs_dirtemplate), (off_t)0,
 				UIO_SYSSPACE, IO_NODELOCKED | IO_NOMACCHECK,
-				tvfs_context_ucred(ap->a_context), NOCRED, NULL, NULL);
+				vfs_context_ucred(ap->a_context), NOCRED, NULL, NULL);
 			if (error == 0) {
 				/* Like ufs little-endian: */
 				namlen = dirbuf.dotdot_type;
@@ -986,7 +975,7 @@ abortit:
 					    sizeof(struct ext2fs_dirtemplate),
 					    (off_t)0, UIO_SYSSPACE,
 					    IO_NODELOCKED | IO_SYNC |
-					    IO_NOMACCHECK, tvfs_context_ucred(ap->a_context),
+					    IO_NOMACCHECK, vfs_context_ucred(ap->a_context),
 					    NOCRED, NULL, NULL);
 					cache_purge(fdvp);
 				}
@@ -1013,13 +1002,15 @@ bad:
 out:
 	if (doingdirectory)
 		ip->i_flag &= ~IN_RENAME;
-	if (vn_lock(fvp, LK_EXCLUSIVE) == 0) {
-		ip->i_nlink--;
-		ip->i_flag |= IN_CHANGE;
-		ip->i_flag &= ~IN_RENAME;
-		vnode_put(fvp);
-	} else
-		vnode_put(fvp);
+	/*
+	 * FreeBSD had to retake the source's vnode lock before touching the
+	 * inode on this path. There is no such lock here; the iocount is still
+	 * held, so the inode can simply be corrected.
+	 */
+	ip->i_nlink--;
+	ip->i_flag |= IN_CHANGE;
+	ip->i_flag &= ~IN_RENAME;
+	vnode_put(fvp);
 	return (error);
 }
 
@@ -1030,7 +1021,7 @@ static int
 ext2_mkdir(struct vnop_mkdir_args *ap)
 {
 	struct vnode *dvp = ap->a_dvp;
-	struct vattr *vap = ap->a_vap;
+	struct vnode_attr *vap = ap->a_vap;
 	struct componentname *cnp = ap->a_cnp;
 	struct inode *ip, *dp;
 	struct vnode *tvp;
@@ -1073,11 +1064,11 @@ ext2_mkdir(struct vnop_mkdir_args *ap)
 			dmode |= ISUID;
 			ip->i_uid = dp->i_uid;
 		} else {
-			ip->i_uid = kauth_cred_getuid(vfs_context_ucred(ap->a_context));
+			ip->i_uid = kauth_cred_getuid(vfs_context_ucred(ctx));
 		}
 	}
 #else
-	ip->i_uid = vfs_context_ucred(ap->a_context)->cr_uid;
+	ip->i_uid = kauth_cred_getuid(vfs_context_ucred(ap->a_context));
 #endif
 	ip->i_flag |= IN_ACCESS | IN_CHANGE | IN_UPDATE;
 	ip->i_mode = dmode;
@@ -1196,7 +1187,6 @@ ext2_rmdir(struct vnop_rmdir_args *ap)
 	dp->i_nlink--;
 	dp->i_flag |= IN_CHANGE;
 	cache_purge(dvp);
-	VOP_UNLOCK(dvp, 0);
 	/*
 	 * Truncate inode.  The only stuff left
 	 * in the directory is "." and "..".  The
@@ -1210,13 +1200,12 @@ ext2_rmdir(struct vnop_rmdir_args *ap)
 	 */
 	ip->i_nlink -= 2;
 	error = ext2_truncate(vp, (off_t)0, IO_SYNC, vfs_context_ucred(ap->a_context),
-	    cnp->cn_thread);
+	    NULL);
 	cache_purge(ITOV(ip));
-	if (vn_lock(dvp, LK_EXCLUSIVE | LK_NOWAIT) != 0) {
-		VOP_UNLOCK(vp, 0);
-		vn_lock(dvp, LK_EXCLUSIVE | LK_RETRY);
-		vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-	}
+	/*
+	 * FreeBSD reacquired the parent and child locks here in a fixed order
+	 * to avoid deadlocking with another rmdir. XNU takes no such locks.
+	 */
 out:
 	return (error);
 }
@@ -1232,12 +1221,12 @@ ext2_symlink(struct vnop_symlink_args *ap)
 	int len, error;
 
 	error = ext2_makeinode(IFLNK | ap->a_vap->va_mode, ap->a_dvp,
-	    vpp, ap->a_cnp);
+	    vpp, ap->a_cnp, ap->a_context);
 	if (error)
 		return (error);
 	vp = *vpp;
 	len = strlen(ap->a_target);
-	if (len < vnode_mount(vp)->mnt_maxsymlinklen) {
+	if (len < EXT2_MAXSYMLINKLEN) {
 		ip = VTOI(vp);
 		bcopy(ap->a_target, (char *)ip->i_shortlink, len);
 		ip->i_size = len;
@@ -1474,22 +1463,18 @@ ext2_vinit(struct mount *mntp, struct vop_vector *fifoops, struct vnode **vpp)
  */
 static int
 ext2_makeinode(int mode, struct vnode *dvp, struct vnode **vpp,
-    struct componentname *cnp)
+    struct componentname *cnp, vfs_context_t ctx)
 {
 	struct inode *ip, *pdir;
 	struct vnode *tvp;
 	int error;
 
 	pdir = VTOI(dvp);
-#ifdef INVARIANTS
-	if ((cnp->cn_flags & HASBUF) == 0)
-		panic("ext2_makeinode: no name");
-#endif
 	*vpp = NULL;
 	if ((mode & IFMT) == 0)
 		mode |= IFREG;
 
-	error = ext2_valloc(dvp, mode, vfs_context_ucred(ap->a_context), &tvp);
+	error = ext2_valloc(dvp, mode, vfs_context_ucred(ctx), &tvp);
 	if (error) {
 		return (error);
 	}
@@ -1507,15 +1492,15 @@ ext2_makeinode(int mode, struct vnode *dvp, struct vnode **vpp,
 		 */
 		if ( (vfs_flags(vnode_mount(dvp)) & MNT_SUIDDIR) &&
 		     (pdir->i_mode & ISUID) &&
-		     (pdir->i_uid != vfs_context_ucred(ap->a_context)->cr_uid) && pdir->i_uid) {
+		     (pdir->i_uid != kauth_cred_getuid(vfs_context_ucred(ap->a_context))) && pdir->i_uid) {
 			ip->i_uid = pdir->i_uid;
 			mode &= ~07111;
 		} else {
-			ip->i_uid = vfs_context_ucred(ap->a_context)->cr_uid;
+			ip->i_uid = kauth_cred_getuid(vfs_context_ucred(ap->a_context));
 		}
 	}
 #else
-	ip->i_uid = vfs_context_ucred(ap->a_context)->cr_uid;
+	ip->i_uid = kauth_cred_getuid(vfs_context_ucred(ap->a_context));
 #endif
 	ip->i_flag |= IN_ACCESS | IN_CHANGE | IN_UPDATE;
 	ip->i_mode = mode;
@@ -1532,7 +1517,7 @@ ext2_makeinode(int mode, struct vnode *dvp, struct vnode **vpp,
 	if (ip->i_mode & ISGID) {
 		int ismember = 0;
 
-		if (kauth_cred_ismember_gid(vfs_context_ucred(ap->a_context),
+		if (kauth_cred_ismember_gid(vfs_context_ucred(ctx),
 		    (gid_t)ip->i_gid, &ismember) != 0 || !ismember)
 			ip->i_mode &= ~ISGID;
 	}

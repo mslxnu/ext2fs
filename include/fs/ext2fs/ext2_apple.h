@@ -57,6 +57,24 @@
  */
 #define	EXT2_LCKGRP_NAME	"com.beako.filesystems.ext2fs"
 
+/*
+ * Per-inode lock. FreeBSD's VI_LOCK/VI_UNLOCK took the vnode interlock; XNU
+ * has no such thing, so the inode carries its own mutex.
+ *
+ * The NULL check covers the window before ext2_vget() has allocated it - a
+ * partially built inode on an error path - rather than being an ordinary
+ * condition.
+ */
+#define	EXT2_ILOCK(ip)		do {					\
+	if ((ip)->i_lock != NULL)					\
+		lck_mtx_lock((ip)->i_lock);				\
+} while (0)
+
+#define	EXT2_IUNLOCK(ip)	do {					\
+	if ((ip)->i_lock != NULL)					\
+		lck_mtx_unlock((ip)->i_lock);				\
+} while (0)
+
 /* FreeBSD utility macros with no XNU counterpart. */
 #ifndef nitems
 #define	nitems(x)	(sizeof((x)) / sizeof((x)[0]))

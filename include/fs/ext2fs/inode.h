@@ -40,6 +40,7 @@
 
 #include <sys/param.h>
 #include <sys/queue.h>
+#include <kern/locks.h>
 
 #include <fs/ext2fs/ext2_extents.h>
 
@@ -87,6 +88,18 @@ struct inode {
 	 */
 	LIST_ENTRY(inode) i_hash;
 	uint32_t i_vid;
+
+	/*
+	 * Protects the mutable fields below - the timestamps and i_flag in
+	 * particular.
+	 *
+	 * FreeBSD relied on the vnode interlock (VI_LOCK) for this, and on the
+	 * vnode lock to serialise operations on a file. XNU has neither: vnops
+	 * may run concurrently on one vnode, so the file system supplies its
+	 * own lock, as HFS does for a cnode. Allocated by ext2_vget() and
+	 * released by ext2_reclaim().
+	 */
+	lck_mtx_t *i_lock;
 
 	struct	m_ext2fs *i_e2fs;	/* EXT2FS */
 	u_quad_t i_modrev;	/* Revision level for NFS lease. */
