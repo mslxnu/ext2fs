@@ -37,12 +37,10 @@
 
 #include <sys/param.h>
 #include <sys/systm.h>
-#include <sys/bio.h>
 #include <sys/buf.h>
 #include <sys/proc.h>
 #include <sys/vnode.h>
 #include <sys/mount.h>
-#include <sys/resourcevar.h>
 #include <sys/stat.h>
 
 #include <fs/ext2fs/inode.h>
@@ -51,37 +49,88 @@
 #include <fs/ext2fs/ext2_dinode.h>
 #include <fs/ext2fs/ext2_extern.h>
 #include <fs/ext2fs/ext2_mount.h>
+#include <fs/ext2fs/ext2_apple.h>
 
-static int ext4_bmapext(struct vnode *, int32_t, int64_t *, int *, int *);
+static int ext4_bmapext(struct vnode *, daddr64_t, daddr64_t *, int *, int *);
 
 /*
- * Bmap converts the logical block number of a file to its physical block
- * number on the disk. The conversion is done by using the logical block
- * number to index into the array of block pointers described by the dinode.
+ * Map a byte range of a file to a device block number and a count of
+ * contiguous bytes.
+ *
+ * This replaces FreeBSD's VOP_BMAP. The two describe the same mapping but in
+ * different units: VOP_BMAP takes a logical block and reports forward and
+ * backward runs in blocks, while VNOP_BLOCKMAP takes a byte offset and reports
+ * a single forward run in bytes. Converting here lets ext2_bmaparray() below
+ * keep working in blocks, as the rest of the imported code expects.
+ *
+ * FreeBSD's a_bop - the caller asking for the underlying device's bufobj - has
+ * no counterpart and is simply gone, and because there is no backward run to
+ * report, ext2_bmaparray() is always called with runb == NULL.
  */
 int
-ext2_bmap(struct vop_bmap_args *ap)
+ext2_blockmap(struct vnop_blockmap_args *ap)
 {
-	daddr64_t blkno;
-	int error;
+	struct vnode *vp = ap->a_vp;
+	struct inode *ip;
+	struct m_ext2fs *fs;
+	daddr64_t lbn, bn;
+	off_t blkoffset, contig;
+	int error, run = 0;
+	uint32_t bsize;
 
-	/*
-	 * Check for underlying vnode requests and ensure that logical
-	 * to physical mapping is requested.
-	 */
-	if (ap->a_bop != NULL)
-		*ap->a_bop = &VTOI(ap->a_vp)->i_devvp->v_bufobj;
-	if (ap->a_bnp == NULL)
+	if (ap->a_bpn == NULL)
 		return (0);
 
-	if (VTOI(ap->a_vp)->i_flag & IN_E4EXTENTS)
-		error = ext4_bmapext(ap->a_vp, ap->a_bn, &blkno,
-		    ap->a_runp, ap->a_runb);
+	ip = VTOI(vp);
+	fs = ip->i_e2fs;
+	bsize = fs->e2fs_bsize;
+
+	lbn = (daddr64_t)lblkno(fs, ap->a_foffset);
+	blkoffset = blkoff(fs, ap->a_foffset);
+
+	if (ip->i_flag & IN_E4EXTENTS)
+		error = ext4_bmapext(vp, lbn, &bn, &run, NULL);
 	else
-		error = ext2_bmaparray(ap->a_vp, ap->a_bn, &blkno,
-		    ap->a_runp, ap->a_runb);
-	*ap->a_bnp = blkno;
-	return (error);
+		error = ext2_bmaparray(vp, lbn, &bn, &run, NULL);
+	if (error != 0)
+		return (error);
+
+	if (ap->a_poff != NULL)
+		*(int *)ap->a_poff = 0;
+
+	if (bn < 0) {
+		/* A hole: no device blocks back this offset. */
+		*ap->a_bpn = (daddr64_t)-1;
+		if (ap->a_run != NULL)
+			*ap->a_run = 0;
+		return (0);
+	}
+
+	/*
+	 * bn addresses the file system block holding a_foffset; step forward
+	 * to the device block that holds the byte itself.
+	 */
+	*ap->a_bpn = bn + (daddr64_t)(blkoffset >> DEV_BSHIFT);
+
+	if (ap->a_run != NULL) {
+		/*
+		 * run counts the file system blocks that follow bn
+		 * contiguously, so the mapping is good to the end of that
+		 * span - less the part of the first block already behind
+		 * a_foffset. Never report past what was asked for, nor past
+		 * end of file.
+		 */
+		contig = (off_t)(run + 1) * (off_t)bsize - blkoffset;
+		if (contig > (off_t)ap->a_size)
+			contig = (off_t)ap->a_size;
+		if (ap->a_foffset + contig > (off_t)ip->i_size)
+			contig = (off_t)ip->i_size - ap->a_foffset;
+		if (contig < 0)
+			contig = 0;
+		*ap->a_run = (size_t)contig;
+	}
+
+	return (0);
 }
 
 /*
@@ -89,7 +138,7 @@ ext2_bmap(struct vop_bmap_args *ap)
  * its physical block number on the disk within ext4 extents.
  */
 static int
-ext4_bmapext(struct vnode *vp, int32_t bn, int64_t *bnp, int *runp, int *runb)
+ext4_bmapext(struct vnode *vp, daddr64_t bn, daddr64_t *bnp, int *runp, int *runb)
 {
 	struct inode *ip;
 	struct m_ext2fs *fs;
@@ -146,6 +195,7 @@ ext2_bmaparray(struct vnode *vp, daddr64_t bn, daddr64_t *bnp, int *runp, int *r
 	struct ext2mount *ump;
 	struct mount *mp;
 	struct indir a[NIADDR+1], *ap;
+	e2fs_daddr_t *bap;
 	daddr64_t daddr;
 	e2fs_lbn_t metalbn;
 	int error, num, maxrun = 0, bsize;
@@ -153,13 +203,24 @@ ext2_bmaparray(struct vnode *vp, daddr64_t bn, daddr64_t *bnp, int *runp, int *r
 
 	ap = NULL;
 	ip = VTOI(vp);
-	mp = vp->v_mount;
+	mp = vnode_mount(vp);
 	ump = VFSTOEXT2(mp);
 
-	bsize = EXT2_BLOCK_SIZE(ump->um_e2fs);
+	bsize = (int)EXT2_BLOCK_SIZE(ump->um_e2fs);
 
 	if (runp) {
-		maxrun = mp->mnt_iosize_max / bsize - 1;
+		struct vfsioattr ioattr;
+
+		/*
+		 * Cap a run at what the device will accept in one read.
+		 * FreeBSD keeps that limit in mp->mnt_iosize_max; XNU reports
+		 * it through vfs_ioattr(), which fills in system defaults when
+		 * the mount has none of its own.
+		 */
+		vfs_ioattr(mp, &ioattr);
+		maxrun = (int)(ioattr.io_maxreadcnt / (uint32_t)bsize) - 1;
+		if (maxrun < 0)
+			maxrun = 0;
 		*runp = 0;
 	}
 
@@ -201,74 +262,71 @@ ext2_bmaparray(struct vnode *vp, daddr64_t bn, daddr64_t *bnp, int *runp, int *r
 
 	for (bp = NULL, ++ap; --num; ++ap) {
 		/*
-		 * Exit the loop if there is no disk address assigned yet and
-		 * the indirect block isn't in the cache, or if we were
-		 * looking for an indirect block and we've found it.
+		 * Stop once the path runs into a hole - no disk address means
+		 * no indirect block to walk - or once we reach the meta-block
+		 * the caller was asking for.
+		 *
+		 * FreeBSD also carried on when the block had no disk address
+		 * but was present in the buffer cache. That state does not
+		 * arise here: ext2_balloc() allocates an indirect block's disk
+		 * address with ext2_alloc() and writes it synchronously before
+		 * the buffer is ever left in the cache, so an unallocated
+		 * indirect block is genuinely absent.
 		 */
-
 		metalbn = ap->in_lbn;
-		if ((daddr == 0 && !incore(&vp->v_bufobj, metalbn)) || metalbn == bn)
+		if (daddr == 0 || metalbn == bn)
 			break;
-		/*
-		 * If we get here, we've either got the block in the cache
-		 * or we have a disk address for it, go fetch it.
-		 */
-		if (bp)
-			bqrelse(bp);
 
-		bp = getblk(vp, metalbn, bsize, 0, 0, 0);
-		if ((bp->b_flags & B_CACHE) == 0) {
-#ifdef INVARIANTS
-			if (!daddr)
-				panic("ext2_bmaparray: indirect block not in cache");
-#endif
-			bp->b_blkno = blkptrtodb(ump, daddr);
-			bp->b_iocmd = BIO_READ;
-			bp->b_flags &= ~B_INVAL;
-			bp->b_ioflags &= ~BIO_ERROR;
-			vfs_busy_pages(bp, 0);
-			bp->b_iooffset = dbtob(bp->b_blkno);
-			bstrategy(bp);
-			curthread->td_ru.ru_inblock++;
-			error = bufwait(bp);
-			if (error) {
-				brelse(bp);
-				return (error);
-			}
+		if (bp != NULL)
+			buf_brelse(bp);
+
+		/*
+		 * Read the indirect block through the device vnode, addressed
+		 * physically.
+		 *
+		 * FreeBSD caches indirect blocks on the file's own vnode under
+		 * negative logical block numbers, relying on VOP_BMAP to
+		 * translate them on a miss. That cannot work on XNU, whose
+		 * VNOP_BLOCKMAP is expressed in byte offsets into the file and
+		 * has no way to describe a negative block. Metadata therefore
+		 * lives on the device vnode, keyed by physical address, as it
+		 * does in ext2_blkatoff() and the extent code. ext2_balloc()
+		 * has to agree with this, or the two would end up holding
+		 * separate buffers for the same disk block.
+		 */
+		error = buf_meta_bread(ip->i_devvp,
+		    (daddr64_t)blkptrtodb(ump, daddr), bsize, NOCRED, &bp);
+		if (error != 0) {
+			if (bp != NULL)
+				buf_brelse(bp);
+			return (error);
 		}
 
-		daddr = ((e2fs_daddr_t *)bp->b_data)[ap->in_off];
+		bap = (e2fs_daddr_t *)buf_dataptr(bp);
+		daddr = bap[ap->in_off];
 		if (num == 1 && daddr && runp) {
 			for (bn = ap->in_off + 1;
-			    bn < MNINDIR(ump) && *runp < maxrun &&
-			    is_sequential(ump,
-			    ((e2fs_daddr_t *)bp->b_data)[bn - 1],
-			    ((e2fs_daddr_t *)bp->b_data)[bn]);
+			    bn < (daddr64_t)MNINDIR(ump) && *runp < maxrun &&
+			    is_sequential(ump, bap[bn - 1], bap[bn]);
 			    ++bn, ++*runp);
 			bn = ap->in_off;
 			if (runb && bn) {
 				for (--bn; bn >= 0 && *runb < maxrun &&
-					is_sequential(ump,
-					((e2fs_daddr_t *)bp->b_data)[bn],
-					((e2fs_daddr_t *)bp->b_data)[bn + 1]);
+					is_sequential(ump, bap[bn], bap[bn + 1]);
 					--bn, ++*runb);
 			}
 		}
 	}
-	if (bp)
-		bqrelse(bp);
+	if (bp != NULL)
+		buf_brelse(bp);
 
 	/*
-	 * Since this is FFS independent code, we are out of scope for the
-	 * definitions of BLK_NOCOPY and BLK_SNAP, but we do know that they
-	 * will fall in the range 1..um_seqinc, so we use that test and
-	 * return a request for a zeroed out buffer if attempts are made
-	 * to read a BLK_NOCOPY or BLK_SNAP block.
+	 * FreeBSD checked here for a BLK_NOCOPY/BLK_SNAP placeholder left by
+	 * an FFS snapshot and reported it as a hole. ext2fs implements no
+	 * snapshots - nothing ever sets SF_SNAPSHOT on an ext2 inode - and
+	 * um_seqinc, the GEOM-era field the test relied on, is gone, so the
+	 * check has no subject and has been dropped.
 	 */
-	if ((ip->i_flags & SF_SNAPSHOT) && daddr > 0 && daddr < ump->um_seqinc){
-		*bnp = -1;
-		return (0);
-	}
 	*bnp = blkptrtodb(ump, daddr);
 	if (*bnp == 0) {
 		*bnp = -1;
@@ -294,7 +352,7 @@ ext2_getlbns(struct vnode *vp, daddr64_t bn, struct indir *ap, int *nump)
 	int i, numlevels, off;
 	int64_t qblockcnt;
 
-	ump = VFSTOEXT2(vp->v_mount);
+	ump = VFSTOEXT2(vnode_mount(vp));
 	if (nump)
 		*nump = 0;
 	numlevels = 0;
@@ -319,8 +377,13 @@ ext2_getlbns(struct vnode *vp, daddr64_t bn, struct indir *ap, int *nump)
 		 * Use int64_t's here to avoid overflow for triple indirect
 		 * blocks when longs have 32 bits and the block size is more
 		 * than 4K.
+		 *
+		 * MNINDIR is u_long, so it is cast as well: left implicit it
+		 * would drag the signed operands into unsigned arithmetic,
+		 * which matters because bn is a signed block number that the
+		 * caller may have handed us negative (a meta-block).
 		 */
-		qblockcnt = (int64_t)blockcnt * MNINDIR(ump);
+		qblockcnt = (int64_t)blockcnt * (int64_t)MNINDIR(ump);
 		if (bn < qblockcnt)
 			break;
 		blockcnt = qblockcnt;
@@ -346,7 +409,7 @@ ext2_getlbns(struct vnode *vp, daddr64_t bn, struct indir *ap, int *nump)
 		if (metalbn == realbn)
 			break;
 
-		off = (bn / blockcnt) % MNINDIR(ump);
+		off = (int)((bn / blockcnt) % (int64_t)MNINDIR(ump));
 
 		++numlevels;
 		ap->in_lbn = metalbn;

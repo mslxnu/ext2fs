@@ -54,7 +54,12 @@ int	ext2_blkatoff(struct vnode *, off_t, char **, struct buf **);
 void	ext2_blkfree(struct inode *,  e4fs_daddr_t, long);
 e4fs_daddr_t	ext2_blkpref(struct inode *, e2fs_lbn_t, int, e2fs_daddr_t *,
 	    e2fs_daddr_t);
-int	ext2_bmap(struct vop_bmap_args *);
+/*
+ * VNOP_BLOCKMAP, XNU's replacement for FreeBSD's VOP_BMAP. It is expressed in
+ * byte offsets rather than logical blocks; ext2_bmaparray() below keeps the
+ * block-based interface the imported code uses.
+ */
+int	ext2_blockmap(struct vnop_blockmap_args *);
 int	ext2_bmaparray(struct vnode *, daddr64_t, daddr64_t *, int *, int *);
 void	ext2_clusteracct(struct m_ext2fs *, char *, int, daddr64_t, int);
 void	ext2_dirbad(struct inode *ip, doff_t offset, char *how);

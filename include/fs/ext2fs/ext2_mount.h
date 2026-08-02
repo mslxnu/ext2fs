@@ -98,8 +98,13 @@ struct ext2mount {
 #define	EXT2_UNLOCK(aa)		lck_mtx_unlock((aa)->um_lock)
 #define	EXT2_MTX(aa)		((aa)->um_lock)
 
-/* Convert mount ptr to ext2fsmount ptr. */
-#define	VFSTOEXT2(mp)	((struct ext2mount *)((mp)->mnt_data))
+/*
+ * Convert mount ptr to ext2fsmount ptr.
+ *
+ * FreeBSD reads mp->mnt_data directly; XNU keeps struct mount opaque and
+ * publishes vfs_fsprivate() for the same field.
+ */
+#define	VFSTOEXT2(mp)	((struct ext2mount *)vfs_fsprivate(mp))
 
 /*
  * Macros to access file system parameters in the ufsmount structure.
