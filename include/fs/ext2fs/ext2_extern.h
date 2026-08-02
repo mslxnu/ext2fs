@@ -67,9 +67,16 @@ void	ext2_ei2i(struct ext2fs_dinode *, struct inode *);
 int	ext2_getlbns(struct vnode *, daddr64_t, struct indir *, int *);
 void	ext2_i2ei(struct inode *, struct ext2fs_dinode *);
 void	ext2_itimes(struct vnode *vp);
-int	ext2_reclaim(struct vop_reclaim_args *);
+int	ext2_reclaim(struct vnop_reclaim_args *);
 int	ext2_truncate(struct vnode *, off_t, int, struct ucred *, struct thread *);
 int	ext2_update(struct vnode *, int);
+/* In-core inode hash, ext2_ihash.c. */
+int	ext2_ihashinit(void);
+void	ext2_ihashdestroy(void);
+int	ext2_ihashget(struct ext2mount *, ino_t, struct vnode **);
+void	ext2_ihashins(struct inode *);
+void	ext2_ihashrem(struct inode *);
+
 /*
  * The file system's own vget. XNU keeps the VFS_* dispatch macros to itself,
  * so ext2_valloc() calls this directly rather than going through VFS_VGET.
@@ -91,7 +98,7 @@ int	ext2_dirrewrite(struct inode *,
 int	ext2_dirempty(struct inode *, ino_t, struct ucred *);
 int	ext2_checkpath(struct inode *, struct inode *, struct ucred *);
 int	cg_has_sb(int i);
-int	ext2_inactive(struct vop_inactive_args *);
+int	ext2_inactive(struct vnop_inactive_args *);
 
 /* Flags to low-level allocation routines.
  * The low 16-bits are reserved for IO_ flags from vnode.h.

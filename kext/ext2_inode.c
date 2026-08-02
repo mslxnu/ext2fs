@@ -39,20 +39,19 @@
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/mount.h>
-#include <sys/bio.h>
 #include <sys/buf.h>
 #include <sys/vnode.h>
 #include <sys/malloc.h>
-#include <sys/rwlock.h>
 
-#include <vm/vm.h>
-#include <vm/vm_extern.h>
+#include <sys/ubc.h>
 
+#include <fs/ext2fs/ext2_dinode.h>
 #include <fs/ext2fs/inode.h>
 #include <fs/ext2fs/ext2_mount.h>
 #include <fs/ext2fs/ext2fs.h>
 #include <fs/ext2fs/fs.h>
 #include <fs/ext2fs/ext2_extern.h>
+#include <fs/ext2fs/ext2_apple.h>
 
 static int ext2_indirtrunc(struct inode *, daddr64_t, daddr64_t,
 	    daddr64_t, int, e4fs_daddr_t *);
@@ -74,7 +73,11 @@ ext2_update(struct vnode *vp, int waitfor)
 	struct inode *ip;
 	int error;
 
-	ASSERT_VOP_ELOCKED(vp, "ext2_update");
+	/*
+	 * FreeBSD asserted the vnode was exclusively locked here. XNU does not
+	 * expose vnode lock state, and its vnode layer serialises the paths
+	 * that reach this on its own.
+	 */
 	ext2_itimes(vp);
 	ip = VTOI(vp);
 	if ((ip->i_flag & IN_MODIFIED) == 0 && waitfor == 0)
@@ -83,18 +86,20 @@ ext2_update(struct vnode *vp, int waitfor)
 	fs = ip->i_e2fs;
 	if(fs->e2fs_ronly)
 		return (0);
-	if ((error = bread(ip->i_devvp,
-	    fsbtodb(fs, ino_to_fsba(fs, ip->i_number)),
-		(int)fs->e2fs_bsize, NOCRED, &bp)) != 0) {
-		brelse(bp);
+	error = buf_meta_bread(ip->i_devvp,
+	    (daddr64_t)fsbtodb(fs, ino_to_fsba(fs, ip->i_number)),
+	    (int)fs->e2fs_bsize, NOCRED, &bp);
+	if (error != 0) {
+		if (bp != NULL)
+			buf_brelse(bp);
 		return (error);
 	}
-	ext2_i2ei(ip, (struct ext2fs_dinode *)((char *)bp->b_data +
+	ext2_i2ei(ip, (struct ext2fs_dinode *)((char *)buf_dataptr(bp) +
 	    EXT2_INODE_SIZE(fs) * ino_to_fsbo(fs, ip->i_number)));
 	if (waitfor && !DOINGASYNC(vp))
-		return (bwrite(bp));
+		return (buf_bwrite(bp));
 	else {
-		bdwrite(bp);
+		buf_bdwrite(bp);
 		return (0);
 	}
 }
@@ -130,13 +135,15 @@ ext2_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 	bo = &ovp->v_bufobj;
 #endif
 
-	ASSERT_VOP_LOCKED(vp, "ext2_truncate");	
+	/*
+	 * FreeBSD asserted the vnode was locked here; XNU does not expose
+	 * vnode lock state.
+	 */
 
 	if (length < 0)
 	    return (EINVAL);
 
-	if (ovp->v_type == VLNK &&
-	    oip->i_size < ovp->v_mount->mnt_maxsymlinklen) {
+	if (vnode_vtype(ovp) == VLNK && oip->i_size < EXT2_MAXSYMLINKLEN) {
 #ifdef INVARIANTS
 		if (length != 0)
 			panic("ext2_truncate: partial truncate of symlink");
@@ -146,7 +153,7 @@ ext2_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 		oip->i_flag |= IN_CHANGE | IN_UPDATE;
 		return (ext2_update(ovp, 1));
 	}
-	if (oip->i_size == length) {
+	if (oip->i_size == (uint64_t)length) {
 		oip->i_flag |= IN_CHANGE | IN_UPDATE;
 		return (ext2_update(ovp, 0));
 	}
@@ -160,24 +167,28 @@ ext2_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 	if (osize < length) {
 		if (length > oip->i_e2fs->e2fs_maxfilesize)
 			return (EFBIG);
-		vnode_pager_setsize(ovp, length);
+		ubc_setsize(ovp, length);
 		offset = blkoff(fs, length - 1);
 		lbn = lblkno(fs, length - 1);
 		flags |= BA_CLRBUF;
 		error = ext2_balloc(oip, lbn, offset + 1, cred, &bp, flags);
 		if (error) {
-			vnode_pager_setsize(vp, osize);
+			ubc_setsize(vp, osize);
 			return (error);
 		}
 		oip->i_size = length;
-		if (bp->b_bufsize == fs->e2fs_bsize)
-			bp->b_flags |= B_CLUSTEROK;
+		/*
+		 * FreeBSD marked a full-sized buffer B_CLUSTEROK so its
+		 * cluster writer could coalesce it. XNU's cluster layer has
+		 * no such flag - it works from the blockmap - so only the
+		 * sync policy carries over.
+		 */
 		if (flags & IO_SYNC)
-			bwrite(bp);
+			buf_bwrite(bp);
 		else if (DOINGASYNC(ovp))
-			bdwrite(bp);
+			buf_bdwrite(bp);
 		else
-			bawrite(bp);
+			buf_bawrite(bp);
 		oip->i_flag |= IN_CHANGE | IN_UPDATE;
 		return (ext2_update(ovp, !DOINGASYNC(ovp)));
 	}
@@ -200,16 +211,26 @@ ext2_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 			return (error);
 		oip->i_size = length;
 		size = blksize(fs, oip, lbn);
-		bzero((char *)bp->b_data + offset, (u_int)(size - offset));
-		allocbuf(bp, size);
-		if (bp->b_bufsize == fs->e2fs_bsize)
-			bp->b_flags |= B_CLUSTEROK;
+		bzero((char *)buf_dataptr(bp) + offset, (u_int)(size - offset));
+		/*
+		 * FreeBSD's allocbuf() resized the buffer's storage; XNU's
+		 * buf_setsize() records the new valid length of a buffer that
+		 * is already large enough, which is all that is wanted here -
+		 * size is never more than the block the buffer was got for.
+		 */
+		buf_setsize(bp, size);
+		/*
+		 * FreeBSD marked a full-sized buffer B_CLUSTEROK so its
+		 * cluster writer could coalesce it. XNU's cluster layer has
+		 * no such flag - it works from the blockmap - so only the
+		 * sync policy carries over.
+		 */
 		if (flags & IO_SYNC)
-			bwrite(bp);
+			buf_bwrite(bp);
 		else if (DOINGASYNC(ovp))
-			bdwrite(bp);
+			buf_bdwrite(bp);
 		else
-			bawrite(bp);
+			buf_bawrite(bp);
 	}
 	/*
 	 * Calculate index into inode's block list of
@@ -258,10 +279,18 @@ ext2_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 		oip->i_ib[i] = oldblks[NDADDR + i];
 	}
 	oip->i_size = osize;
-	error = vtruncbuf(ovp, cred, length, (int)fs->e2fs_bsize);
+	/*
+	 * Discard whatever is cached beyond the new end of file. FreeBSD's
+	 * vtruncbuf() took a length and trimmed from there; XNU splits the job:
+	 * ubc_setsize() drops the file's pages past the new size, and
+	 * buf_invalidateblks() clears the metadata buffers held on this vnode,
+	 * flushing dirty ones first so nothing is lost that belongs below the
+	 * truncation point.
+	 */
+	error = buf_invalidateblks(ovp, BUF_WRITE_DATA, 0, 0);
 	if (error && (allerror == 0))
 		allerror = error;
-	vnode_pager_setsize(ovp, length);
+	ubc_setsize(ovp, length);
 
 	/*
 	 * Indirect blocks first.
@@ -350,12 +379,12 @@ done:
 	 * Put back the real size.
 	 */
 	oip->i_size = length;
-	if (oip->i_blocks >= blocksreleased)
+	if (oip->i_blocks >= (uint64_t)blocksreleased)
 		oip->i_blocks -= blocksreleased;
 	else				/* sanity */
 		oip->i_blocks = 0;
 	oip->i_flag |= IN_CHANGE;
-	vnode_pager_setsize(ovp, length);
+	ubc_setsize(ovp, length);
 	return (allerror);
 }
 
@@ -401,35 +430,39 @@ ext2_indirtrunc(struct inode *ip, daddr64_t lbn, daddr64_t dbn,
 	 * the on disk address, so we have to set the b_blkno field
 	 * explicitly instead of letting bread do everything for us.
 	 */
+	/*
+	 * The comment above explains why FreeBSD drove the read by hand: it
+	 * cached indirect blocks on the file's vnode by logical block, and
+	 * bmap could not translate them once the levels above had been freed,
+	 * so it filled in b_blkno itself. Here indirect blocks are already
+	 * addressed physically on the device vnode - dbn is that address - so
+	 * an ordinary metadata read does the same job.
+	 */
 	vp = ITOV(ip);
-	bp = getblk(vp, lbn, (int)fs->e2fs_bsize, 0, 0, 0);
-	if ((bp->b_flags & (B_DONE | B_DELWRI)) == 0) {
-		bp->b_iocmd = BIO_READ;
-		if (bp->b_bcount > bp->b_bufsize)
-			panic("ext2_indirtrunc: bad buffer size");
-		bp->b_blkno = dbn;
-		vfs_busy_pages(bp, 0);
-		bp->b_iooffset = dbtob(bp->b_blkno);
-		bstrategy(bp);
-		error = bufwait(bp);
-	}
+	error = buf_meta_bread(ip->i_devvp, dbn, (int)fs->e2fs_bsize, NOCRED,
+	    &bp);
 	if (error) {
-		brelse(bp);
+		if (bp != NULL)
+			buf_brelse(bp);
 		*countp = 0;
 		return (error);
 	}
 
-	bap = (e2fs_daddr_t *)bp->b_data;
+	bap = (e2fs_daddr_t *)buf_dataptr(bp);
 	copy = malloc(fs->e2fs_bsize, M_TEMP, M_WAITOK);
 	bcopy((caddr_t)bap, (caddr_t)copy, (u_int)fs->e2fs_bsize);
 	bzero((caddr_t)&bap[last + 1],
 	  (NINDIR(fs) - (last + 1)) * sizeof(e2fs_daddr_t));
+	/*
+	 * With no entries left the block is about to be freed, so there is no
+	 * point writing it back; mark it invalid and let the release drop it.
+	 */
 	if (last == -1)
-		bp->b_flags |= B_INVAL;
+		buf_markinvalid(bp);
 	if (DOINGASYNC(vp)) {
-		bdwrite(bp);
+		buf_bdwrite(bp);
 	} else {
-		error = bwrite(bp);
+		error = buf_bwrite(bp);
 		if (error)
 			allerror = error;
 	}
@@ -475,11 +508,10 @@ ext2_indirtrunc(struct inode *ip, daddr64_t lbn, daddr64_t dbn,
  *	discard preallocated blocks
  */
 int
-ext2_inactive(struct vop_inactive_args *ap)
+ext2_inactive(struct vnop_inactive_args *ap)
 {
 	struct vnode *vp = ap->a_vp;
 	struct inode *ip = VTOI(vp);
-	struct thread *td = ap->a_td;
 	int mode, error = 0;
 
 	/*
@@ -488,7 +520,7 @@ ext2_inactive(struct vop_inactive_args *ap)
 	if (ip->i_mode == 0)
 		goto out;
 	if (ip->i_nlink <= 0) {
-		error = ext2_truncate(vp, (off_t)0, 0, NOCRED, td);
+		error = ext2_truncate(vp, (off_t)0, 0, NOCRED, NULL);
 		ip->i_rdev = 0;
 		mode = ip->i_mode;
 		ip->i_mode = 0;
@@ -502,8 +534,12 @@ out:
 	 * If we are done with the inode, reclaim it
 	 * so that it can be reused immediately.
 	 */
+	/*
+	 * FreeBSD called vrecycle() to have the vnode torn down at once. XNU
+	 * spells the same request vnode_recycle().
+	 */
 	if (ip->i_mode == 0)
-		vrecycle(vp);
+		vnode_recycle(vp);
 	return (error);
 }
 
@@ -511,19 +547,35 @@ out:
  * Reclaim an inode so that it can be used for other purposes.
  */
 int
-ext2_reclaim(struct vop_reclaim_args *ap)
+ext2_reclaim(struct vnop_reclaim_args *ap)
 {
 	struct inode *ip;
 	struct vnode *vp = ap->a_vp;
 
 	ip = VTOI(vp);
+	if (ip == NULL)
+		return (0);
+
 	if (ip->i_flag & IN_LAZYMOD) {
 		ip->i_flag |= IN_MODIFIED;
 		ext2_update(vp, 0);
 	}
-	vfs_hash_remove(vp);
-	free(vp->v_data, M_EXT2NODE);
-	vp->v_data = 0;
-	vnode_destroy_vobject(vp);
+
+	/*
+	 * Take the inode out of the hash before the vnode loses its identity,
+	 * so no concurrent ext2_ihashget() can find it and try to reference a
+	 * vnode that is being torn down. FreeBSD used the generic vfs_hash;
+	 * this file system carries its own (ext2_ihash.c).
+	 */
+	ext2_ihashrem(ip);
+
+	/*
+	 * Detach before freeing: after this the vnode has no file system data,
+	 * which is what XNU expects of a reclaimed vnode. vnode_destroy_vobject
+	 * has no counterpart - the UBC is torn down by the vnode layer itself.
+	 */
+	vnode_clearfsnode(vp);
+	_FREE(ip, M_TEMP);
+
 	return (0);
 }

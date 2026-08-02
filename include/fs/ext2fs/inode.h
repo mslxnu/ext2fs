@@ -73,6 +73,21 @@ struct inode {
 	uint32_t i_flag;	/* flags, see below */
 	ino_t	  i_number;	/* The identity of the inode. */
 
+	/*
+	 * In-core inode hash, ext2_ihash.c.
+	 *
+	 * FreeBSD keeps its inodes in the generic vfs_hash, which is keyed off
+	 * the vnode. XNU publishes nothing equivalent, so the file system runs
+	 * its own table and each inode carries its own link.
+	 *
+	 * i_vid is the vnode's identity at the time it was hashed. A vnode can
+	 * be recycled out from under a hash lookup, and vnode_getwithvid()
+	 * rejects the reference if the identity has moved on, which is what
+	 * makes the lookup safe without holding the vnode.
+	 */
+	LIST_ENTRY(inode) i_hash;
+	uint32_t i_vid;
+
 	struct	m_ext2fs *i_e2fs;	/* EXT2FS */
 	u_quad_t i_modrev;	/* Revision level for NFS lease. */
 	/*

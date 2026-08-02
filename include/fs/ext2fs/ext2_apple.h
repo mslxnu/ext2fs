@@ -57,6 +57,14 @@
 #define	EXT2_LCKGRP_NAME	"com.beako.filesystems.ext2fs"
 
 /*
+ * Is this mount running asynchronously?
+ *
+ * FreeBSD spells this DOINGASYNC(vp), reaching into the mount structure. XNU
+ * keeps the mount opaque and publishes the same flag through vfs_flags().
+ */
+#define	DOINGASYNC(vp)	((vfs_flags(vnode_mount(vp)) & MNT_ASYNC) != 0)
+
+/*
  * Find the first byte in a buffer that is not equal to c, or NULL if every
  * byte matches.
  *

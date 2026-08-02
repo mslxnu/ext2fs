@@ -28,11 +28,12 @@ CSRCS:=   ext2fs.c \
           ext2_balloc.c \
           ext2_bmap.c \
           ext2_extents.c \
+          ext2_ihash.c \
+          ext2_inode.c \
           ext2_inode_cnv.c \
           ext2_subr.c
 
-PENDING_CSRCS:= ext2_inode.c \
-                ext2_lookup.c \
+PENDING_CSRCS:= ext2_lookup.c \
                 ext2_vfsops.c \
                 ext2_vnops.c
 
