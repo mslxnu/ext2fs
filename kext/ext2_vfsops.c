@@ -38,23 +38,13 @@
 
 #include <sys/param.h>
 #include <sys/systm.h>
-#include <sys/namei.h>
-#include <sys/priv.h>
-#include <sys/proc.h>
 #include <sys/kernel.h>
 #include <sys/vnode.h>
 #include <sys/mount.h>
-#include <sys/bio.h>
 #include <sys/buf.h>
-#include <sys/conf.h>
 #include <sys/endian.h>
-#include <sys/fcntl.h>
-#include <sys/malloc.h>
 #include <sys/stat.h>
-#include <sys/mutex.h>
 
-#include <geom/geom.h>
-#include <geom/geom_vfs.h>
 
 #include <fs/ext2fs/ext2_mount.h>
 #include <fs/ext2fs/inode.h>
@@ -63,6 +53,7 @@
 #include <fs/ext2fs/ext2fs.h>
 #include <fs/ext2fs/ext2_dinode.h>
 #include <fs/ext2fs/ext2_extern.h>
+#include <fs/ext2fs/ext2_apple.h>
 
 static int	ext2_flushfiles(struct mount *mp, int flags, struct thread *td);
 static int	ext2_mountfs(struct vnode *, struct mount *);
@@ -77,8 +68,8 @@ static vfs_vget_t		ext2_vget;
 static vfs_fhtovp_t		ext2_fhtovp;
 static vfs_mount_t		ext2_mount;
 
-MALLOC_DEFINE(M_EXT2NODE, "ext2_node", "EXT2 vnode private part");
-static MALLOC_DEFINE(M_EXT2MNT, "ext2_mount", "EXT2 mount structure");
+MALLOC_DEFINE(M_TEMP, "ext2_node", "EXT2 vnode private part");
+static MALLOC_DEFINE(M_TEMP, "ext2_mount", "EXT2 mount structure");
 
 static struct vfsops ext2fs_vfsops = {
 	.vfs_fhtovp =		ext2_fhtovp,
@@ -233,7 +224,7 @@ ext2_mount(struct mount *mp)
 	devvp = ndp->ni_vp;
 
 	if (!vn_isdisk(devvp, &error)) {
-		vput(devvp);
+		vnode_put(devvp);
 		return (error);
 	}
 
@@ -250,7 +241,7 @@ ext2_mount(struct mount *mp)
 	if (error)
 		error = priv_check(td, PRIV_VFS_MOUNT_PERM);
 	if (error) {
-		vput(devvp);
+		vnode_put(devvp);
 		return (error);
 	}
 
@@ -258,13 +249,13 @@ ext2_mount(struct mount *mp)
 		error = ext2_mountfs(devvp, mp);
 	} else {
 		if (devvp != ump->um_devvp) {
-			vput(devvp);
+			vnode_put(devvp);
 			return (EINVAL);	/* needs translation */
 		} else
-			vput(devvp);
+			vnode_put(devvp);
 	}
 	if (error) {
-		vrele(devvp);
+		vnode_put(devvp);
 		return (error);
 	}
 	ump = VFSTOEXT2(mp);
@@ -318,7 +309,7 @@ compute_sb_data(struct vnode *devvp, struct ext2fs *es,
 	int db_count, error;
 	int i;
 	int logic_sb_block = 1;	/* XXX for now */
-	struct buf *bp;
+	buf_t bp;
 	uint32_t e2fs_descpb;
 
 	fs->e2fs_bshift = EXT2_MIN_BLOCK_LOG_SIZE + es->e2fs_log_bsize;
@@ -362,10 +353,10 @@ compute_sb_data(struct vnode *devvp, struct ext2fs *es,
 	e2fs_descpb = fs->e2fs_bsize / sizeof(struct ext2_gd);
 	db_count = (fs->e2fs_gcount + e2fs_descpb - 1) / e2fs_descpb;
 	fs->e2fs_gdbcount = db_count;
-	fs->e2fs_gd = malloc(db_count * fs->e2fs_bsize,
-	    M_EXT2MNT, M_WAITOK);
-	fs->e2fs_contigdirs = malloc(fs->e2fs_gcount *
-	    sizeof(*fs->e2fs_contigdirs), M_EXT2MNT, M_WAITOK | M_ZERO);
+	fs->e2fs_gd = _MALLOC(db_count * fs->e2fs_bsize,
+	    M_TEMP, M_WAITOK);
+	fs->e2fs_contigdirs = _MALLOC(fs->e2fs_gcount *
+	    sizeof(*fs->e2fs_contigdirs), M_TEMP, M_WAITOK | M_ZERO);
 
 	/*
 	 * Adjust logic_sb_block.
@@ -375,20 +366,20 @@ compute_sb_data(struct vnode *devvp, struct ext2fs *es,
 	if(fs->e2fs_bsize > SBSIZE)
 		logic_sb_block = 0;
 	for (i = 0; i < db_count; i++) {
-		error = bread(devvp ,
+		error = buf_meta_bread(devvp ,
 			 fsbtodb(fs, logic_sb_block + i + 1 ),
 			fs->e2fs_bsize, NOCRED, &bp);
 		if (error) {
-			free(fs->e2fs_contigdirs, M_EXT2MNT);
-			free(fs->e2fs_gd, M_EXT2MNT);
-			brelse(bp);
+			_FREE(fs->e2fs_contigdirs, M_TEMP);
+			_FREE(fs->e2fs_gd, M_TEMP);
+			buf_brelse(bp);
 			return (error);
 		}
-		e2fs_cgload((struct ext2_gd *)bp->b_data,
+		e2fs_cgload((struct ext2_gd *)buf_dataptr(bp),
 		    &fs->e2fs_gd[
 			i * fs->e2fs_bsize / sizeof(struct ext2_gd)],
 		    fs->e2fs_bsize);
-		brelse(bp);
+		buf_brelse(bp);
 		bp = NULL;
 	}
 	/* Initialization for the ext2 Orlov allocator variant. */
@@ -423,7 +414,7 @@ ext2_reload(struct mount *mp, struct thread *td)
 {
 	struct vnode *vp, *mvp, *devvp;
 	struct inode *ip;
-	struct buf *bp;
+	buf_t bp;
 	struct ext2fs *es;
 	struct m_ext2fs *fs;
 	struct csum *sump;
@@ -445,25 +436,25 @@ ext2_reload(struct mount *mp, struct thread *td)
 	 * Step 2: re-read superblock from disk.
 	 * constants have been adjusted for ext2
 	 */
-	if ((error = bread(devvp, SBLOCK, SBSIZE, NOCRED, &bp)) != 0)
+	if ((error = buf_meta_bread(devvp, SBLOCK, SBSIZE, NOCRED, &bp)) != 0)
 		return (error);
-	es = (struct ext2fs *)bp->b_data;
+	es = (struct ext2fs *)buf_dataptr(bp);
 	if (ext2_check_sb_compat(es, devvp->v_rdev, 0) != 0) {
-		brelse(bp);
+		buf_brelse(bp);
 		return (EIO);		/* XXX needs translation */
 	}
 	fs = VFSTOEXT2(mp)->um_e2fs;
-	bcopy(bp->b_data, fs->e2fs, sizeof(struct ext2fs));
+	bcopy(buf_dataptr(bp), fs->e2fs, sizeof(struct ext2fs));
 
 	if((error = compute_sb_data(devvp, es, fs)) != 0) {
-		brelse(bp);
+		buf_brelse(bp);
 		return (error);
 	}
 #ifdef UNKLAR
 	if (fs->fs_sbsize < SBSIZE)
 		bp->b_flags |= B_INVAL;
 #endif
-	brelse(bp);
+	buf_brelse(bp);
 
 	/*
 	 * Step 3: invalidate all cluster summary information.
@@ -494,19 +485,19 @@ loop:
 		 * Step 5: re-read inode data for all active vnodes.
 		 */
 		ip = VTOI(vp);
-		error = bread(devvp, fsbtodb(fs, ino_to_fsba(fs, ip->i_number)),
+		error = buf_meta_bread(devvp, fsbtodb(fs, ino_to_fsba(fs, ip->i_number)),
 		    (int)fs->e2fs_bsize, NOCRED, &bp);
 		if (error) {
 			VOP_UNLOCK(vp, 0);
-			vrele(vp);
+			vnode_put(vp);
 			MNT_VNODE_FOREACH_ALL_ABORT(mp, mvp);
 			return (error);
 		}
-		ext2_ei2i((struct ext2fs_dinode *) ((char *)bp->b_data +
+		ext2_ei2i((struct ext2fs_dinode *) ((char *)buf_dataptr(bp) +
 		    EXT2_INODE_SIZE(fs) * ino_to_fsbo(fs, ip->i_number)), ip);
-		brelse(bp);
+		buf_brelse(bp);
 		VOP_UNLOCK(vp, 0);
-		vrele(vp);
+		vnode_put(vp);
 	}
 	return (0);
 }
@@ -518,7 +509,7 @@ static int
 ext2_mountfs(struct vnode *devvp, struct mount *mp)
 {
 	struct ext2mount *ump;
-	struct buf *bp;
+	buf_t bp;
 	struct m_ext2fs *fs;
 	struct ext2fs *es;
 	struct cdev *dev = devvp->v_rdev;
@@ -563,9 +554,9 @@ ext2_mountfs(struct vnode *devvp, struct mount *mp)
 
 	bp = NULL;
 	ump = NULL;
-	if ((error = bread(devvp, SBLOCK, SBSIZE, NOCRED, &bp)) != 0)
+	if ((error = buf_meta_bread(devvp, SBLOCK, SBSIZE, NOCRED, &bp)) != 0)
 		goto out;
-	es = (struct ext2fs *)bp->b_data;
+	es = (struct ext2fs *)buf_dataptr(bp);
 	if (ext2_check_sb_compat(es, dev, ronly) != 0) {
 		error = EINVAL;		/* XXX needs translation */
 		goto out;
@@ -582,17 +573,17 @@ ext2_mountfs(struct vnode *devvp, struct mount *mp)
 			goto out;
 		}
 	}
-	ump = malloc(sizeof(*ump), M_EXT2MNT, M_WAITOK | M_ZERO);
+	ump = _MALLOC(sizeof(*ump), M_TEMP, M_WAITOK | M_ZERO);
 
 	/*
 	 * I don't know whether this is the right strategy. Note that
 	 * we dynamically allocate both an ext2_sb_info and an ext2_super_block
 	 * while Linux keeps the super block in a locked buffer.
 	 */
-	ump->um_e2fs = malloc(sizeof(struct m_ext2fs),
-		M_EXT2MNT, M_WAITOK);
-	ump->um_e2fs->e2fs = malloc(sizeof(struct ext2fs),
-		M_EXT2MNT, M_WAITOK);
+	ump->um_e2fs = _MALLOC(sizeof(struct m_ext2fs),
+		M_TEMP, M_WAITOK);
+	ump->um_e2fs->e2fs = _MALLOC(sizeof(struct ext2fs),
+		M_TEMP, M_WAITOK);
 	mtx_init(EXT2_MTX(ump), "EXT2FS", "EXT2FS Lock", MTX_DEF);
 	bcopy(es, ump->um_e2fs->e2fs, (u_int)sizeof(struct ext2fs));
 	if ((error = compute_sb_data(devvp, ump->um_e2fs->e2fs, ump->um_e2fs)))
@@ -608,20 +599,20 @@ ext2_mountfs(struct vnode *devvp, struct mount *mp)
 	ump->um_e2fs->e2fs_contigsumsize = MIN(e2fs_maxcontig, EXT2_MAXCONTIG);
 	if (ump->um_e2fs->e2fs_contigsumsize > 0) {
 		size = ump->um_e2fs->e2fs_gcount * sizeof(int32_t);
-		ump->um_e2fs->e2fs_maxcluster = malloc(size, M_EXT2MNT, M_WAITOK);
+		ump->um_e2fs->e2fs_maxcluster = _MALLOC(size, M_TEMP, M_WAITOK);
 		size = ump->um_e2fs->e2fs_gcount * sizeof(struct csum);
-		ump->um_e2fs->e2fs_clustersum = malloc(size, M_EXT2MNT, M_WAITOK);
+		ump->um_e2fs->e2fs_clustersum = _MALLOC(size, M_TEMP, M_WAITOK);
 		lp = ump->um_e2fs->e2fs_maxcluster;
 		sump = ump->um_e2fs->e2fs_clustersum;
 		for (i = 0; i < ump->um_e2fs->e2fs_gcount; i++, sump++) {
 			*lp++ = ump->um_e2fs->e2fs_contigsumsize;
 			sump->cs_init = 0;
-			sump->cs_sum = malloc((ump->um_e2fs->e2fs_contigsumsize + 1) *
-			    sizeof(int32_t), M_EXT2MNT, M_WAITOK | M_ZERO);
+			sump->cs_sum = _MALLOC((ump->um_e2fs->e2fs_contigsumsize + 1) *
+			    sizeof(int32_t), M_TEMP, M_WAITOK | M_ZERO);
 		}
 	}
 
-	brelse(bp);
+	buf_brelse(bp);
 	bp = NULL;
 	fs = ump->um_e2fs;
 	fs->e2fs_ronly = ronly;	/* ronly is set according to mnt_flags */
@@ -667,7 +658,7 @@ ext2_mountfs(struct vnode *devvp, struct mount *mp)
 	return (0);
 out:
 	if (bp)
-		brelse(bp);
+		buf_brelse(bp);
 	if (cp != NULL) {
 		DROP_GIANT();
 		g_topology_lock();
@@ -677,11 +668,11 @@ out:
 	}
 	if (ump) {
 		mtx_destroy(EXT2_MTX(ump));
-		free(ump->um_e2fs->e2fs_gd, M_EXT2MNT);
-		free(ump->um_e2fs->e2fs_contigdirs, M_EXT2MNT);
-		free(ump->um_e2fs->e2fs, M_EXT2MNT);
-		free(ump->um_e2fs, M_EXT2MNT);
-		free(ump, M_EXT2MNT);
+		_FREE(ump->um_e2fs->e2fs_gd, M_TEMP);
+		_FREE(ump->um_e2fs->e2fs_contigdirs, M_TEMP);
+		_FREE(ump->um_e2fs->e2fs, M_TEMP);
+		_FREE(ump->um_e2fs, M_TEMP);
+		_FREE(ump, M_TEMP);
 		mp->mnt_data = NULL;
 	}
 	return (error);
@@ -720,17 +711,17 @@ ext2_unmount(struct mount *mp, int mntflags)
 	g_vfs_close(ump->um_cp);
 	g_topology_unlock();
 	PICKUP_GIANT();
-	vrele(ump->um_devvp);
+	vnode_put(ump->um_devvp);
 	sump = fs->e2fs_clustersum;
 	for (i = 0; i < fs->e2fs_gcount; i++, sump++)
-		free(sump->cs_sum, M_EXT2MNT);
-	free(fs->e2fs_clustersum, M_EXT2MNT);
-	free(fs->e2fs_maxcluster, M_EXT2MNT);
-	free(fs->e2fs_gd, M_EXT2MNT);
-	free(fs->e2fs_contigdirs, M_EXT2MNT);
-	free(fs->e2fs, M_EXT2MNT);
-	free(fs, M_EXT2MNT);
-	free(ump, M_EXT2MNT);
+		_FREE(sump->cs_sum, M_TEMP);
+	_FREE(fs->e2fs_clustersum, M_TEMP);
+	_FREE(fs->e2fs_maxcluster, M_TEMP);
+	_FREE(fs->e2fs_gd, M_TEMP);
+	_FREE(fs->e2fs_contigdirs, M_TEMP);
+	_FREE(fs->e2fs, M_TEMP);
+	_FREE(fs, M_TEMP);
+	_FREE(ump, M_TEMP);
 	mp->mnt_data = NULL;
 	MNT_ILOCK(mp);
 	mp->mnt_flag &= ~MNT_LOCAL;
@@ -828,7 +819,7 @@ ext2_sync(struct mount *mp, int waitfor)
 	 */
 loop:
 	MNT_VNODE_FOREACH_ALL(vp, mp, mvp) {
-		if (vp->v_type == VNON) {
+		if (vnode_vtype(vp) == VNON) {
 			VI_UNLOCK(vp);
 			continue;
 		}
@@ -851,7 +842,7 @@ loop:
 		if ((error = VOP_FSYNC(vp, waitfor, td)) != 0)
 			allerror = error;
 		VOP_UNLOCK(vp, 0);
-		vrele(vp);
+		vnode_put(vp);
 	}
 
 	/*
@@ -882,66 +873,68 @@ loop:
  * return the inode locked.  Detection and handling of mount points must be
  * done by the calling routine.
  */
-static int
-ext2_vget(struct mount *mp, ino_t ino, int flags, struct vnode **vpp)
+int
+ext2_vget(struct mount *mp, ino_t ino, struct vnode **vpp, vfs_context_t ctx)
 {
 	struct m_ext2fs *fs;
 	struct inode *ip;
 	struct ext2mount *ump;
-	struct buf *bp;
+	struct vnode_fsparam vfsp;
+	buf_t bp;
 	struct vnode *vp;
-	struct thread *td;
 	int i, error;
 	int used_blocks;
 
-	td = curthread;
-	error = vfs_hash_get(mp, ino, flags, td, vpp, NULL, NULL);
-	if (error || *vpp != NULL)
-		return (error);
-
+	*vpp = NULL;
 	ump = VFSTOEXT2(mp);
-	ip = malloc(sizeof(struct inode), M_EXT2NODE, M_WAITOK | M_ZERO);
+	fs = ump->um_e2fs;
 
-	/* Allocate a new vnode/inode. */
-	if ((error = getnewvnode("ext2fs", mp, &ext2_vnodeops, &vp)) != 0) {
-		*vpp = NULL;
-		free(ip, M_EXT2NODE);
+	/*
+	 * Already in core? FreeBSD asked the generic vfs_hash; this file
+	 * system keeps its own table, and a hit comes back with an iocount
+	 * held.
+	 */
+	error = ext2_ihashget(ump, ino, vpp);
+	if (error != 0)
 		return (error);
-	}
-	vp->v_data = ip;
-	ip->i_vnode = vp;
-	ip->i_e2fs = fs = ump->um_e2fs;
-	ip->i_ump  = ump;
+	if (*vpp != NULL)
+		return (0);
+
+	ip = _MALLOC(sizeof(struct inode), M_TEMP, M_WAITOK | M_ZERO);
+	if (ip == NULL)
+		return (ENOMEM);
+
+	ip->i_e2fs = fs;
+	ip->i_ump = ump;
 	ip->i_number = ino;
 
-	lockmgr(vp->v_vnlock, LK_EXCLUSIVE, NULL);
-	error = insmntque(vp, mp);
-	if (error != 0) {
-		free(ip, M_EXT2NODE);
-		*vpp = NULL;
-		return (error);
+	ip->i_lock = lck_mtx_alloc_init(ext2_lck_grp, LCK_ATTR_NULL);
+	if (ip->i_lock == NULL) {
+		_FREE(ip, M_TEMP);
+		return (ENOMEM);
 	}
-	error = vfs_hash_insert(vp, ino, flags, td, vpp, NULL, NULL);
-	if (error || *vpp != NULL)
-		return (error);
 
-	/* Read in the disk contents for the inode, copy into the inode. */
-	if ((error = bread(ump->um_devvp, fsbtodb(fs, ino_to_fsba(fs, ino)),
-	    (int)fs->e2fs_bsize, NOCRED, &bp)) != 0) {
-		/*
-		 * The inode does not contain anything useful, so it would
-		 * be misleading to leave it on its hash chain. With mode
-		 * still zero, it will be unlinked and returned to the free
-		 * list by vput().
-		 */
-		brelse(bp);
-		vput(vp);
-		*vpp = NULL;
+	/*
+	 * Read the inode in before the vnode is created. XNU wants the vnode's
+	 * type and, for a device, its rdev at vnode_create() time - it uses
+	 * them to pick the operation vector and to find any existing alias -
+	 * so unlike FreeBSD, which made the vnode first and filled it in
+	 * afterwards, the on-disk inode has to be in hand first.
+	 */
+	error = buf_meta_bread(ump->um_devvp,
+	    (daddr64_t)fsbtodb(fs, ino_to_fsba(fs, ino)),
+	    (int)fs->e2fs_bsize, NOCRED, &bp);
+	if (error != 0) {
+		if (bp != NULL)
+			buf_brelse(bp);
+		lck_mtx_free(ip->i_lock, ext2_lck_grp);
+		_FREE(ip, M_TEMP);
 		return (error);
 	}
+
 	/* convert ext2 inode to dinode */
-	ext2_ei2i((struct ext2fs_dinode *) ((char *)bp->b_data + EXT2_INODE_SIZE(fs) *
-			ino_to_fsbo(fs, ino)), ip);
+	ext2_ei2i((struct ext2fs_dinode *)((char *)buf_dataptr(bp) +
+	    EXT2_INODE_SIZE(fs) * ino_to_fsbo(fs, ino)), ip);
 	ip->i_block_group = ino_to_cg(fs, ino);
 	ip->i_next_alloc_block = 0;
 	ip->i_next_alloc_goal = 0;
@@ -956,38 +949,70 @@ ext2_vget(struct mount *mp, ino_t ino, int flags, struct vnode **vpp)
 	 */
 	if (!(ip->i_flag & IN_E4EXTENTS) &&
 	    (S_ISDIR(ip->i_mode) || S_ISREG(ip->i_mode))) {
-		used_blocks = (ip->i_size+fs->e2fs_bsize-1) / fs->e2fs_bsize;
+		used_blocks = (int)((ip->i_size + fs->e2fs_bsize - 1) /
+		    fs->e2fs_bsize);
 		for (i = used_blocks; i < EXT2_NDIR_BLOCKS; i++)
 			ip->i_db[i] = 0;
 	}
-#ifdef EXT2FS_DEBUG
-	ext2_print_inode(ip);
-#endif
-	bqrelse(bp);
-
-	/*
-	 * Initialize the vnode from the inode, check for aliases.
-	 * Note that the underlying vnode may have changed.
-	 */
-	if ((error = ext2_vinit(mp, &ext2_fifoops, &vp)) != 0) {
-		vput(vp);
-		*vpp = NULL;
-		return (error);
-	}
-
-	/*
-	 * Finish inode initialization.
-	 */
+	buf_brelse(bp);
 
 	/*
 	 * Set up a generation number for this inode if it does not
 	 * already have one. This should only happen on old filesystems.
 	 */
 	if (ip->i_gen == 0) {
-		ip->i_gen = random() + 1;
-		if ((vp->v_mount->mnt_flag & MNT_RDONLY) == 0)
+		uint32_t gen;
+
+		read_random(&gen, sizeof(gen));
+		ip->i_gen = gen + 1;
+		if ((vfs_flags(mp) & MNT_RDONLY) == 0)
 			ip->i_flag |= IN_MODIFIED;
 	}
+
+	/*
+	 * Build the vnode.
+	 *
+	 * vnfs_vtype and vnfs_rdev are what let XNU route a device or fifo to
+	 * its own operation vectors instead of ours - that is why this file
+	 * system has no fifo vector of its own, and why ext2_mknod has to
+	 * recycle a vnode when it learns the inode is a device.
+	 *
+	 * vnfs_marksystem stays 0 and vnfs_cnp is NULL: the name cache entry
+	 * is added by the lookup path, which has the componentname; vget can
+	 * be reached without one, as it is from ext2_valloc.
+	 */
+	bzero(&vfsp, sizeof(vfsp));
+	vfsp.vnfs_mp = mp;
+	vfsp.vnfs_vtype = IFTOVT(ip->i_mode);
+	vfsp.vnfs_str = "ext2fs";
+	vfsp.vnfs_dvp = NULL;
+	vfsp.vnfs_fsnode = ip;
+	vfsp.vnfs_vops = ext2_vnodeop_p;
+	vfsp.vnfs_markroot = (ino == EXT2_ROOTINO);
+	vfsp.vnfs_marksystem = 0;
+	vfsp.vnfs_rdev = (vfsp.vnfs_vtype == VBLK ||
+	    vfsp.vnfs_vtype == VCHR) ? (dev_t)ip->i_rdev : 0;
+	vfsp.vnfs_filesize = ip->i_size;
+	vfsp.vnfs_cnp = NULL;
+	vfsp.vnfs_flags = VNFS_ADDFSREF | VNFS_NOCACHE;
+
+	error = vnode_create(VNCREATE_FLAVOR, VCREATESIZE, &vfsp, &vp);
+	if (error != 0) {
+		lck_mtx_free(ip->i_lock, ext2_lck_grp);
+		_FREE(ip, M_TEMP);
+		return (error);
+	}
+
+	ip->i_vnode = vp;
+	ip->i_vid = vnode_vid(vp);
+
+	/*
+	 * Publish it only now that it is fully built: a concurrent
+	 * ext2_ihashget() that found it earlier would have taken a reference
+	 * to a vnode with no inode behind it.
+	 */
+	ext2_ihashins(ip);
+
 	*vpp = vp;
 	return (0);
 }
@@ -1025,7 +1050,7 @@ ext2_fhtovp(struct mount *mp, struct fid *fhp, int flags, struct vnode **vpp)
 	ip = VTOI(nvp);
 	if (ip->i_mode == 0 ||
 	    ip->i_gen != ufhp->ufid_gen || ip->i_nlink <= 0) {
-		vput(nvp);
+		vnode_put(nvp);
 		*vpp = NULLVP;
 		return (ESTALE);
 	}
@@ -1042,15 +1067,15 @@ ext2_sbupdate(struct ext2mount *mp, int waitfor)
 {
 	struct m_ext2fs *fs = mp->um_e2fs;
 	struct ext2fs *es = fs->e2fs;
-	struct buf *bp;
+	buf_t bp;
 	int error = 0;
 
 	bp = getblk(mp->um_devvp, SBLOCK, SBSIZE, 0, 0, 0);
-	bcopy((caddr_t)es, bp->b_data, (u_int)sizeof(struct ext2fs));
+	bcopy((caddr_t)es, buf_dataptr(bp), (u_int)sizeof(struct ext2fs));
 	if (waitfor == MNT_WAIT)
-		error = bwrite(bp);
+		error = buf_bwrite(bp);
 	else
-		bawrite(bp);
+		buf_bawrite(bp);
 
 	/*
 	 * The buffers for group descriptors, inode bitmaps and block bitmaps
@@ -1063,7 +1088,7 @@ int
 ext2_cgupdate(struct ext2mount *mp, int waitfor)
 {
 	struct m_ext2fs *fs = mp->um_e2fs;
-	struct buf *bp;
+	buf_t bp;
 	int i, error = 0, allerror = 0;
 
 	allerror = ext2_sbupdate(mp, waitfor);
@@ -1073,11 +1098,11 @@ ext2_cgupdate(struct ext2mount *mp, int waitfor)
 		    1 /* superblock */ + i), fs->e2fs_bsize, 0, 0, 0);
 		e2fs_cgsave(&fs->e2fs_gd[
 		    i * fs->e2fs_bsize / sizeof(struct ext2_gd)],
-		    (struct ext2_gd *)bp->b_data, fs->e2fs_bsize);
+		    (struct ext2_gd *)buf_dataptr(bp), fs->e2fs_bsize);
 		if (waitfor == MNT_WAIT)
-			error = bwrite(bp);
+			error = buf_bwrite(bp);
 		else
-			bawrite(bp);
+			buf_bawrite(bp);
 	}
 
 	if (!allerror && error)
