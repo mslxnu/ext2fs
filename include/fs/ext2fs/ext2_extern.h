@@ -85,18 +85,19 @@ int	ext2_vget(struct mount *, ino_t, struct vnode **, vfs_context_t);
 int	ext2_valloc(struct vnode *, int, struct ucred *, struct vnode **);
 int	ext2_vfree(struct vnode *, ino_t, int);
 int	ext2_vinit(struct mount *, struct vop_vector *, struct vnode **vpp);
-int	ext2_lookup(struct vop_cachedlookup_args *);
-int	ext2_readdir(struct vop_readdir_args *);
+int	ext2_lookup(struct vnop_lookup_args *);
+int	ext2_readdir(struct vnop_readdir_args *);
 #ifdef EXT2FS_DEBUG
 void	ext2_print_inode(struct inode *);
 #endif
-int	ext2_direnter(struct inode *, 
-		struct vnode *, struct componentname *);
+int	ext2_direnter(struct inode *, struct vnode *,
+	    struct componentname *, vfs_context_t);
 int	ext2_dirremove(struct vnode *, struct componentname *);
 int	ext2_dirrewrite(struct inode *,
 		struct inode *, struct componentname *);
 int	ext2_dirempty(struct inode *, ino_t, struct ucred *);
-int	ext2_checkpath(struct inode *, struct inode *, struct ucred *);
+int	ext2_checkpath(struct inode *, struct inode *, struct ucred *,
+	    vfs_context_t);
 int	cg_has_sb(int i);
 int	ext2_inactive(struct vnop_inactive_args *);
 

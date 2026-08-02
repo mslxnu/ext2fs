@@ -19,6 +19,7 @@
 #include <kern/locks.h>
 #include <libkern/OSMalloc.h>
 #include <sys/buf.h>
+#include <sys/dirent.h>	/* struct dirent, for EXT2_DIRENT_RECLEN */
 #include <sys/random.h>	/* read_random */
 #include <sys/kernel_types.h>
 #include <sys/vnode.h>
@@ -55,6 +56,26 @@
  * token, BUNDLEID_S is its stringified form.
  */
 #define	EXT2_LCKGRP_NAME	"com.beako.filesystems.ext2fs"
+
+/* FreeBSD utility macros with no XNU counterpart. */
+#ifndef nitems
+#define	nitems(x)	(sizeof((x)) / sizeof((x)[0]))
+#endif
+#ifndef roundup2
+#define	roundup2(x, y)	(((x) + ((y) - 1)) & (~((y) - 1)))	/* y is a power of 2 */
+#endif
+
+/*
+ * Length of the struct dirent that readdir hands back for a name of the given
+ * length: the fixed part, plus the name and its terminator, rounded up to four
+ * bytes so the next record stays aligned.
+ *
+ * This is FreeBSD's GENERIC_DIRSIZ() written against XNU's struct dirent,
+ * which has a different fixed part.
+ */
+#define	EXT2_DIRENT_RECLEN(namlen)					\
+	((uint16_t)((__builtin_offsetof(struct dirent, d_name) +	\
+	    (namlen) + 1 + 3) & ~3))
 
 /*
  * Is this mount running asynchronously?

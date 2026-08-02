@@ -247,26 +247,6 @@ cg_has_sb(int i)
 #define	EXT2FS_DIRSIZ(namlen)	EXT2_DIR_REC_LEN(namlen)
 #endif
 
-/*
- * The "." and ".." pair that opens every directory, as one writable unit.
- *
- * Each half is an on-disk directory entry whose 12-byte record length is what
- * fixes the name arrays at four bytes; the members are naturally aligned, so
- * the struct is exactly 24 bytes with no padding and can be written straight
- * to disk. OpenBSD declares this in <ufs/ext2fs/ext2fs_dir.h>.
- */
-struct ext2fs_dirtemplate {
-	uint32_t	dot_ino;
-	uint16_t	dot_reclen;
-	uint8_t		dot_namlen;
-	uint8_t		dot_type;
-	char		dot_name[4];		/* "." + NUL padding */
-	uint32_t	dotdot_ino;
-	uint16_t	dotdot_reclen;
-	uint8_t		dotdot_namlen;
-	uint8_t		dotdot_type;
-	char		dotdot_name[4];		/* ".." + NUL padding */
-};
 
 /* Round a byte count up to a whole file system block. */
 #ifndef blkroundup
