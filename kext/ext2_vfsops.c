@@ -341,30 +341,30 @@ ext2_unmount(struct mount *mp, int mntflags, vfs_context_t ctx)
 	if ((error = ext2_flushfiles(mp, flags, ctx)) != 0)
 		return (error);
 
-#ifdef EXT2_UNMOUNT_MINIMAL
 	/*
-	 * Diagnostic build only - see kext/Makefile.
+	 * EXT2_UNMOUNT_STAGE is a diagnostic build switch - see kext/Makefile.
+	 * Unset, it is 4 and this function behaves normally. Lower values stop
+	 * partway through the teardown, leaking whatever is left, to bisect a
+	 * machine freeze on umount that produces no panic. Stage 1 has already
+	 * been shown to survive, which is what puts the fault below this line.
 	 *
-	 * Stop here, before any of the teardown below: release nothing, free
-	 * nothing, leave the device vnode's iocount held. The mount leaks
-	 * entirely and the volume cannot be mounted again without unloading
-	 * the kext, which is fine for one measurement.
-	 *
-	 * The point is to bisect a machine freeze on umount that leaves no
-	 * panic - the signature of a wild write rather than a deadlock. The
-	 * vnodes are already reclaimed by ext2_flushfiles() above, so if the
-	 * freeze survives this, nothing below is responsible and the fault is
-	 * in the mount path or in reclaim. If it goes away, it is in the
-	 * teardown that follows.
+	 *   1  return now: nothing released, nothing freed
+	 *   2  + release the device (buf_invalidateblks, vnode_put)
+	 *   3  + free the superblock and the per-group arrays
+	 *   4  + free the mount lock and the mount itself (normal)
 	 */
-	printf("ext2fs: EXT2_UNMOUNT_MINIMAL: skipping teardown\n");
-	vfs_setfsprivate(mp, NULL);
-	vfs_clearflags(mp, MNT_LOCAL);
-	return (0);
+#ifndef EXT2_UNMOUNT_STAGE
+#define	EXT2_UNMOUNT_STAGE	4
+#endif
+#if EXT2_UNMOUNT_STAGE < 4
+	printf("ext2fs: unmount stage %d of 4, leaking the rest\n",
+	    EXT2_UNMOUNT_STAGE);
 #endif
 
 	ump = VFSTOEXT2(mp);
 	fs = ump->um_e2fs;
+
+#if EXT2_UNMOUNT_STAGE >= 2
 	ronly = fs->e2fs_ronly;
 	if (ronly == 0 && ext2_cgupdate(ump, MNT_WAIT) == 0) {
 		if (fs->e2fs_wasvalid)
@@ -379,7 +379,12 @@ ext2_unmount(struct mount *mp, int mntflags, vfs_context_t ctx)
 	 */
 	(void)buf_invalidateblks(ump->um_devvp, BUF_WRITE_DATA, 0, 0);
 	vnode_put(ump->um_devvp);
+#else
+	(void)ronly;
+	(void)fs;
+#endif
 
+#if EXT2_UNMOUNT_STAGE >= 3
 	if (fs->e2fs_clustersum != NULL) {
 		sump = fs->e2fs_clustersum;
 		for (i = 0; i < (int)fs->e2fs_gcount; i++, sump++)
@@ -391,9 +396,16 @@ ext2_unmount(struct mount *mp, int mntflags, vfs_context_t ctx)
 	_FREE(fs->e2fs_contigdirs, M_TEMP);
 	_FREE(fs->e2fs, M_TEMP);
 	_FREE(fs, M_TEMP);
+#else
+	(void)sump;
+	(void)i;
+#endif
+
+#if EXT2_UNMOUNT_STAGE >= 4
 	if (ump->um_lock != NULL)
 		lck_mtx_free(ump->um_lock, ext2_lck_grp);
 	_FREE(ump, M_TEMP);
+#endif
 
 	vfs_setfsprivate(mp, NULL);
 	vfs_clearflags(mp, MNT_LOCAL);

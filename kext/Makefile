@@ -78,17 +78,17 @@ CFLAGS+= -DKERNEL \
          -D_KERNEL \
          -D_DARWIN_C_SOURCE
 
-# Diagnostic switch, off by default. Build with
+# Diagnostic switch, off by default (equivalent to UNMOUNT_STAGE=4). Build with
 #
-#	make UNMOUNT_MINIMAL=1
+#	make UNMOUNT_STAGE=2
 #
-# and ext2_unmount() returns straight after flushing the vnodes, releasing
-# nothing and freeing nothing. The mount leaks and the volume cannot be
-# remounted without reloading the kext; it exists to bisect a machine freeze on
-# umount that produces no panic, by taking the entire teardown out of the
-# picture in one build. Never ship this.
-ifdef UNMOUNT_MINIMAL
-CFLAGS+= -DEXT2_UNMOUNT_MINIMAL
+# to have ext2_unmount() stop partway through its teardown and leak the rest,
+# bisecting a machine freeze on umount that produces no panic. The stages are
+# listed in ext2_unmount(). A volume unmounted by a reduced build leaks and
+# cannot be remounted until the kext is reloaded, which is enough for one
+# measurement per boot. Never ship a value below 4.
+ifdef UNMOUNT_STAGE
+CFLAGS+= -DEXT2_UNMOUNT_STAGE=$(UNMOUNT_STAGE)
 endif
 
 ifeq ($(findstring arm64,$(TARGET_TRIPLE)),arm64)
