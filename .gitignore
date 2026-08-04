@@ -67,7 +67,9 @@ Info.plist~
 *.fs
 **/*.fs
 
-# Tool binaries (no extension, so the patterns above miss them)
-tools/newfs_ext2fs/newfs_ext2fs
-tools/fsck_ext2fs/fsck_ext2fs
-tools/ext2fs.util/ext2fs.util
+# Helper binaries (no extension, so the patterns above miss them). They live
+# under fs/ beside the bundle they are staged into, not under tools/.
+fs/mount_ext2fs/mount_ext2fs
+fs/newfs_ext2fs/newfs_ext2fs
+fs/fsck_ext2fs/fsck_ext2fs
+fs/ext2fs.util/ext2fs.util

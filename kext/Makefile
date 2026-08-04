@@ -168,7 +168,6 @@ ifdef COPYRIGHT
 	/usr/libexec/PlistBuddy -c 'Add :NSHumanReadableCopyright string "$(COPYRIGHT)"' $@/Contents/Info.plist
 endif
 ifdef SIGNCERT
-	$(CODESIGN) --force --timestamp=none --sign $(SIGNCERT) $@
 	/usr/libexec/PlistBuddy -c 'Add :CFBundleSignature string ????' $@/Contents/Info.plist
 endif
 ifdef MACOSX_VERSION_MIN
@@ -176,6 +175,12 @@ ifdef MACOSX_VERSION_MIN
 endif
 	/usr/libexec/PlistBuddy -c 'Print OSBundleLibraries' $@/Contents/Info.plist &> /dev/null || \
 		/usr/libexec/PlistBuddy -c 'Add :OSBundleLibraries:com.apple.kpi.bsd string "8.0b1"' $@/Contents/Info.plist
+	@# Sign last. The signature covers Info.plist, so every PlistBuddy edit
+	@# above has to have happened already - signing before them left a kext
+	@# that codesign(1) rejected with "plist or signature have been modified".
+ifdef SIGNCERT
+	$(CODESIGN) --force --timestamp=none --sign $(SIGNCERT) $@
+endif
 	touch $@
 	dsymutil $(ARCHFLAGS) -o $(KEXTNAME).kext.dSYM $@/Contents/MacOS/$(KEXTNAME)
 

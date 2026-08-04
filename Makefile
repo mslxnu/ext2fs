@@ -100,7 +100,14 @@ kextfs:
 	cp -r $(OUT)/ext2fs.kext.arm64e $(OUT)/ext2fs.kext
 	lipo -create $(OUT)/ext2fs.kext.arm64e/Contents/MacOS/ext2fs $(OUT)/ext2fs.kext.x86_64/Contents/MacOS/ext2fs -output $(OUT)/ext2fs.kext/Contents/MacOS/ext2fs
 	cp -r $(OUT)/ext2fs.fs.arm64 $(OUT)/ext2fs.fs
-	lipo -create $(OUT)/ext2fs.fs.arm64/Contents/Resources/mount_ext2fs $(OUT)/ext2fs.fs.x86_64/Contents/Resources/mount_ext2fs -output $(OUT)/ext2fs.fs/Contents/Resources/mount_ext2fs
+	@# Every program in Contents/Resources has to be fattened, not just the
+	@# mount helper: newfs, fsck and the probe helper are separate binaries.
+	@for t in mount_ext2fs newfs_ext2fs fsck_ext2fs ext2fs.util; do \
+		echo "    lipo $$t"; \
+		lipo -create $(OUT)/ext2fs.fs.arm64/Contents/Resources/$$t \
+		             $(OUT)/ext2fs.fs.x86_64/Contents/Resources/$$t \
+		     -output $(OUT)/ext2fs.fs/Contents/Resources/$$t || exit 1; \
+	done
 	codesign --force --timestamp=none --sign - $(OUT)/ext2fs.kext
 	codesign --force --timestamp=none --sign - $(OUT)/ext2fs.fs
 	rm -rf $(OUT)/ext2fs.kext.arm64e $(OUT)/ext2fs.kext.x86_64
@@ -120,25 +127,13 @@ kextfs:
 
 endif
 
-# Build the tools and stage them inside the .fs bundle. diskarbitrationd
-# resolves FSProbeExecutable / FSMountExecutable / FSFormatExecutable /
-# FSRepairExecutable against Contents/Resources, so that is where they have to
-# end up; mount_ext2fs is already put there by the fs/ build.
+# Optional third-party tools (e2fsprogs and friends). The four programs the
+# file system itself needs are built by fs/ and staged into the bundle there,
+# because Contents/Resources is where diskarbitrationd resolves
+# FSProbeExecutable / FSMountExecutable / FSFormatExecutable /
+# FSRepairExecutable. Nothing in tools/ is ported yet, so this is a no-op.
 tools:
-	@mkdir -p $(OUT)
 	$(MAKE) -C tools
-	@if [ -d "$(OUT)/ext2fs.fs/Contents/Resources" ]; then \
-		for t in tools/newfs_ext2fs/newfs_ext2fs \
-		         tools/fsck_ext2fs/fsck_ext2fs \
-		         tools/ext2fs.util/ext2fs.util; do \
-			echo "    stage $$t -> $(OUT)/ext2fs.fs/Contents/Resources"; \
-			cp "$$t" "$(OUT)/ext2fs.fs/Contents/Resources/"; \
-		done; \
-		codesign --force --timestamp=none --sign - $(OUT)/ext2fs.fs; \
-	else \
-		echo "==> $(OUT)/ext2fs.fs missing; run 'make kextfs' first"; \
-		exit 1; \
-	fi
 
 # ---------------------------------------------------------------------------
 # Distribution  ->  installer package and disk image
@@ -215,7 +210,7 @@ release: kextfs
 # Install  (run as root, AFTER `make`; copies only, never compiles)
 # ---------------------------------------------------------------------------
 
-install: preinstall install-kext install-fs install-tools postinstall
+install: preinstall install-kext install-fs install-tools install-man postinstall
 
 # Tear down any previously installed/loaded build first. macOS caches third-party
 # kexts in the Auxiliary Kernel Collection, so a stale staged copy otherwise
@@ -252,8 +247,14 @@ install-tools:
 		target="$(FS_DIR)/ext2fs.fs/Contents/Resources/$$t"; \
 		test -f "$$target" || { echo "    missing $$target"; exit 1; }; \
 		echo "    link $(SBIN_DIR)/$$t -> $$target"; \
-		ln -sfh "$$target" "$(SBIN_DIR)/$$t"; \
+		/bin/ln -sfh "$$target" "$(SBIN_DIR)/$$t"; \
 	done
+
+# Man pages go where the system's own do - /usr/local/share/man/man8, mirroring
+# Apple's fsck_msdos.8 in /usr/share/man/man8 - and not inside the bundle:
+# Apple's .fs bundles carry no man pages, and man(1) would not look there.
+install-man:
+	$(MAKE) -C fs install-man
 
 postinstall:
 	@echo "ext2fs: installed kext, fs."
@@ -280,5 +281,5 @@ clean:
 	$(MAKE) -C tools clean
 
 .PHONY: all kextfs tools tests check distcheck debug release pkg dmg \
-        install preinstall install-kext install-fs install-tools \
+        install preinstall install-kext install-fs install-tools install-man \
         postinstall uninstall clean

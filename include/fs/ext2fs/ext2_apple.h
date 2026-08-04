@@ -134,6 +134,29 @@ memcchr(const void *s, int c, size_t n)
 }
 
 /*
+ * Find the last (highest) set bit, numbered from 1, or 0 if v is zero.
+ *
+ * <libkern/libkern.h> declares both ffs() and fls(), but the kernel only
+ * exports ffs() to kexts. A kext that calls fls() therefore compiles and links
+ * without a word of complaint and then fails at load time with
+ *
+ *   Failed to bind '_fls' ... could not find a kext which exports this symbol
+ *
+ * so this has to be our own. It is deliberately not named fls: redeclaring a
+ * function the public header already declares extern would be a hard error.
+ *
+ * The argument is unsigned because the caller passes bytes out of a block
+ * bitmap held in a char *, and char is signed on Apple platforms. Passing one
+ * straight in would sign-extend any byte with the top bit set, so 0x80 would
+ * arrive as 0xffffff80 and answer 32 instead of 8.
+ */
+static __inline int
+ext2_fls(unsigned int v)
+{
+	return (v == 0 ? 0 : (int)(32 - __builtin_clz(v)));
+}
+
+/*
  * Kext-wide allocation tag and lock group.  Both are created by ext2_init()
  * on load and destroyed by ext2_fini() on unload, so every consumer must
  * treat them as valid only between those two calls.

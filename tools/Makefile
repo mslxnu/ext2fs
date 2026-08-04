@@ -1,20 +1,19 @@
 #
-# All-in-one Makefile
+# Optional third-party tools.
 #
-# SUBDIRS lists what currently builds. The remaining directories are present in
-# the tree but not ported to macOS yet, so they are named in UNPORTED rather
-# than silently forgotten.
+# Nothing here is part of the file system itself. The four programs that are -
+# mount_ext2fs, newfs_ext2fs, fsck_ext2fs and ext2fs.util - live under ../fs,
+# next to the bundle they are installed into, along with the shared fsck/ and
+# util/ sources that fsck_ext2fs builds against.
 #
-# tools/mount_ext2fs is deliberately absent: mount_ext2fs is built by ../fs as
-# part of the ext2fs.fs bundle, which is where the mount helper has to live for
-# the bundle's FSMountExecutable to find it.
+# What is left are upstream projects that have not been ported to macOS. They
+# are named in UNPORTED rather than silently forgotten, and SUBDIRS is empty, so
+# every target here is a successful no-op until one of them is ported.
 #
 
 MAKE=make
 
-SUBDIRS=	newfs_ext2fs \
-		fsck_ext2fs \
-		ext2fs.util
+SUBDIRS=
 
 UNPORTED=	e2undel extfsmgr e2fsprogs
 

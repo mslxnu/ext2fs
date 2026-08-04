@@ -33,9 +33,10 @@ $(PROG): $(OBJS)
 debug: $(PROG)
 release: $(PROG)
 
+# Only the man page. The program itself is installed by the top-level Makefile,
+# which puts the one copy inside the bundle and symlinks $(PREFIX) at it;
+# installing a second copy here would be the drift that arrangement avoids.
 install: $(PROG)
-	install -d "$(PREFIX)"
-	install -m 755 $(PROG) "$(PREFIX)/$(PROG)"
 	install -d "$(MANPREFIX)/man8"
 	install -m 644 $(MAN) "$(MANPREFIX)/man8/$(MAN)"
 

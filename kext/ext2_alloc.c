@@ -546,9 +546,17 @@ retry:
 			continue;
 		}
 
-		/* Start of a run, find the number of high clear bits. */
+		/*
+		 * Start of a run, find the number of high clear bits.
+		 *
+		 * The (u_char) casts matter. bbp is a char *, char is signed
+		 * here, and a bitmap byte from 0x80 upwards would otherwise be
+		 * sign-extended on the way in: ext2_fls() would answer 32 and
+		 * runlen would go negative, so a run could be reported where
+		 * the bits are actually in use.
+		 */
 		if (runlen == 0) {
-			bit = fls(bbp[loc]);
+			bit = ext2_fls((u_char)bbp[loc]);
 			runlen = NBBY - bit;
 			runstart = loc * NBBY + bit;
 		} else if (bbp[loc] == 0) {
@@ -559,7 +567,7 @@ retry:
 			 * Finish the current run.  If it isn't long
 			 * enough, start a new one.
 			 */
-			bit = ffs(bbp[loc]) - 1;
+			bit = ffs((u_char)bbp[loc]) - 1;
 			runlen += bit;
 			if (runlen >= 8) {
 				bno = runstart;
@@ -567,7 +575,7 @@ retry:
 			}
 
 			/* Run was too short, start a new one. */
-			bit = fls(bbp[loc]);
+			bit = ext2_fls((u_char)bbp[loc]);
 			runlen = NBBY - bit;
 			runstart = loc * NBBY + bit;
 		}
