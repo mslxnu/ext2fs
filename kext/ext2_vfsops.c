@@ -1093,6 +1093,32 @@ ext2_cgupdate(struct ext2mount *mp, int waitfor)
  * parsing a path, and why fspec has to remain the first member of that
  * structure. VFS_TBLNOTYPENUM asks for a dynamically assigned file system
  * type number instead of one of the historical fixed values.
+ *
+ * VFS_TBLTHREADSAFE and VFS_TBLFSNODELOCK are not optional. vfs_fsadd()
+ * rejects an entry that sets neither, outright, before it looks at anything
+ * else - "Non-threadsafe filesystems are not supported":
+ *
+ *	if ((vfe->vfe_flags & (VFS_TBLTHREADSAFE | VFS_TBLFSNODELOCK)) == 0)
+ *		return EINVAL;
+ *
+ * They are the last trace of the funnel: neither is turned into a vfc_vfsflag
+ * or consulted again anywhere, so the check is purely an assertion that the
+ * file system does its own locking. Both statements are true here - ext2fs
+ * takes its own inode and mount locks - so both are set. Omitting them is why
+ * the kext loaded but its start routine returned failure.
+ *
+ * VFS_TBL64BITREADY only feeds vfs_64bitready() and vnode_vfs64bitready(),
+ * which a file system queries about its own mount; every file system in XNU's
+ * own vfs_conf.c sets it.
+ *
+ * Deliberately not set:
+ *
+ *   VFS_TBLVNOP_PAGEINV2 / _PAGEOUTV2  ext2_pagein() and ext2_pageout() use
+ *      the v1 convention, taking the UPL the caller already built in a_pl.
+ *      The v2 convention hands the file system a null a_pl and expects it to
+ *      create the UPL itself, so claiming it would fault on the first page.
+ *   VFS_TBLREADDIR_EXTENDED  ext2_readdir() rejects VNODE_READDIR_EXTENDED.
+ *   VFS_TBLNATIVEXATTR  there are no xattr vnops.
  */
 static struct vfsops ext2fs_vfsops = {
 	.vfs_mount	= ext2_mount,
@@ -1120,6 +1146,8 @@ struct vfs_fsentry ext2fs_vfsentry = {
 	.vfe_opvdescs	= ext2fs_vnodeop_opv_desc_list,
 	.vfe_fstypenum	= 0,
 	.vfe_fsname	= MOUNT_EXT2FS,
-	.vfe_flags	= VFS_TBLLOCALVOL | VFS_TBLNOTYPENUM,
+	.vfe_flags	= VFS_TBLTHREADSAFE | VFS_TBLFSNODELOCK |
+			  VFS_TBL64BITREADY | VFS_TBLLOCALVOL |
+			  VFS_TBLNOTYPENUM,
 	.vfe_reserv	= { 0, 0 },
 };
