@@ -16,6 +16,12 @@ ARM_FLAG       := /var/db/ext2fs.enabled
 KSYMS_FILE     := /var/db/ext2fs.ksyms
 VERSION        := $(strip $(shell cat VERSION 2>/dev/null || echo 0.0.0))
 
+# Installer artefacts.
+PKG_ID         := com.beako.filesystems.ext2fs.pkg
+PKG_COMP       := $(OUT)/ext2fs-component.pkg
+PKG_OUT        := $(OUT)/ext2fs-$(VERSION).pkg
+DMG_OUT        := $(OUT)/ext2fs-$(VERSION).dmg
+
 # Detect native arch if ARCH not specified
 NATIVE_ARCH := $(shell uname -m)
 ifeq ($(NATIVE_ARCH),arm64)
@@ -67,7 +73,7 @@ LIB_FLAGS  := ARCHFLAGS="$(LIB_ARCHFLAGS)"  TARGET_TRIPLE="$(LIB_TRIPLE)"
 # ---------------------------------------------------------------------------
 
 # Default: everything needed to install (kext, fs, tools, plists, GUI). Not tests.
-all: clean kextfs tools
+all: clean kextfs tools pkg dmg
 
 ifeq ($(ARCH),universal)
 
@@ -117,9 +123,7 @@ endif
 # Build the tools and stage them inside the .fs bundle. diskarbitrationd
 # resolves FSProbeExecutable / FSMountExecutable / FSFormatExecutable /
 # FSRepairExecutable against Contents/Resources, so that is where they have to
-# end up; mount_ext2fs is already put there by the fs/ build. Copies are also
-# kept in $(OUT) for install-tools to place in $(SBIN_DIR), so that newfs and
-# fsck are usable from a shell.
+# end up; mount_ext2fs is already put there by the fs/ build.
 tools:
 	@mkdir -p $(OUT)
 	$(MAKE) -C tools
@@ -135,7 +139,55 @@ tools:
 		echo "==> $(OUT)/ext2fs.fs missing; run 'make kextfs' first"; \
 		exit 1; \
 	fi
-	@cp tools/newfs_ext2fs/newfs_ext2fs tools/fsck_ext2fs/fsck_ext2fs $(OUT)/
+
+# ---------------------------------------------------------------------------
+# Distribution  ->  installer package and disk image
+# ---------------------------------------------------------------------------
+
+# Installer package. The payload is staged into a root that mirrors the
+# destination layout, then pkgbuild wraps it and productbuild adds the panes.
+#
+# The /usr/local/sbin symlinks are not part of the payload: they are made by
+# the postinstall script, which keeps one description of where they point
+# rather than two that can disagree.
+pkg: kextfs tools
+	@echo "==> Staging installer payload"
+	rm -rf $(OUT)/pkgroot $(OUT)/pkgres
+	install -d $(OUT)/pkgroot/Library/Extensions $(OUT)/pkgroot/Library/Filesystems
+	cp -R $(OUT)/ext2fs.kext $(OUT)/pkgroot/Library/Extensions/
+	cp -R $(OUT)/ext2fs.fs   $(OUT)/pkgroot/Library/Filesystems/
+	@# codesign and pkgbuild reject Finder-info and similar xattrs.
+	xattr -cr $(OUT)/pkgroot
+	@echo "==> Building component package"
+	pkgbuild --root $(OUT)/pkgroot --identifier $(PKG_ID) --version $(VERSION) \
+	         --scripts installer/scripts --ownership recommended \
+	         --component-plist installer/ext2fs-component.plist \
+	         --install-location / $(PKG_COMP)
+	@echo "==> Building product archive"
+	mkdir -p $(OUT)/pkgres
+	cp installer/resources/welcome.html installer/resources/conclusion.html $(OUT)/pkgres/
+	sed -e 's/__KEXTVERSION__/$(VERSION)/g' installer/distribution.xml.in > $(OUT)/distribution.xml
+	productbuild --distribution $(OUT)/distribution.xml --package-path $(OUT) \
+	             --resources $(OUT)/pkgres $(PKG_OUT)
+	rm -rf $(PKG_COMP) $(OUT)/distribution.xml $(OUT)/pkgroot $(OUT)/pkgres
+	@echo "==> Built $(PKG_OUT)"
+
+# Disk image wrapping the installer package, a README and the uninstaller.
+dmg: pkg
+	@echo "==> Building disk image"
+	rm -f $(DMG_OUT)
+	rm -rf $(OUT)/dmg
+	mkdir -p $(OUT)/dmg
+	cp $(PKG_OUT) $(OUT)/dmg/
+	cp installer/resources/DMG-README.txt $(OUT)/dmg/README.txt
+	@# The .command is only a front-end; uninstall.sh must travel with it.
+	cp installer/uninstall.command "$(OUT)/dmg/Uninstall ext2fs.command"
+	cp installer/uninstall.sh      $(OUT)/dmg/uninstall.sh
+	chmod +x "$(OUT)/dmg/Uninstall ext2fs.command" $(OUT)/dmg/uninstall.sh
+	hdiutil create -volname "ext2fs $(VERSION)" -srcfolder $(OUT)/dmg \
+	               -ov -format UDZO $(DMG_OUT)
+	rm -rf $(OUT)/dmg
+	@echo "==> Built $(DMG_OUT)"
 
 # Test programs (not part of the default build).
 tests:
@@ -144,8 +196,15 @@ tests:
 check: tests
 	@echo "==> ext2fs feature tests"
 
-distcheck:
-	@echo "==> Clean distribution build"
+distcheck: dmg
+	@echo "==> Verifying distribution artefacts"
+	@pkgutil --check-signature "$(PKG_OUT)" >/dev/null 2>&1 || true
+	@pkgutil --payload-files "$(PKG_OUT)" >/dev/null 2>&1 || \
+		{ echo "FAIL: $(PKG_OUT) has no readable payload"; exit 1; }
+	@hdiutil imageinfo "$(DMG_OUT)" >/dev/null 2>&1 || \
+		{ echo "FAIL: $(DMG_OUT) is not a valid disk image"; exit 1; }
+	@echo "    $(PKG_OUT)"
+	@echo "    $(DMG_OUT)"
 
 # Back-compat aliases.
 debug: kextfs
@@ -180,21 +239,30 @@ install-fs:
 	chown -R root:wheel $(FS_DIR)/ext2fs.fs
 	chmod -R 755 $(FS_DIR)/ext2fs.fs
 
-# Referenced by the install target since the beginning but never defined, which
-# made `make install` die with "No rule to make target 'install-tools'" before
-# it copied anything. The tool binaries are not produced yet, so the target
-# installs whatever tools/ has left in $(OUT) and stays quiet when that is
-# nothing.
+# The .fs bundle holds the only copy of newfs_ext2fs and fsck_ext2fs; what
+# goes in $(SBIN_DIR) is a symlink to it, so the two can never drift apart.
+# This is how the system's own file systems are arranged - /sbin/fsck_msdos
+# and /sbin/newfs_msdos are symlinks into msdos.fs/Contents/Resources.
+#
+# mount_ext2fs is deliberately not linked: nothing calls it by hand, only
+# diskarbitrationd through the bundle.
 install-tools:
-	@mkdir -p $(SBIN_DIR)
-	@for t in $(OUT)/newfs_ext2fs $(OUT)/fsck_ext2fs; do \
-		test -f "$$t" || continue; \
-		echo "    install $$t -> $(SBIN_DIR)"; \
-		install -o root -g wheel -m 755 "$$t" "$(SBIN_DIR)/"; \
+	@install -d "$(SBIN_DIR)"
+	@for t in newfs_ext2fs fsck_ext2fs; do \
+		target="$(FS_DIR)/ext2fs.fs/Contents/Resources/$$t"; \
+		test -f "$$target" || { echo "    missing $$target"; exit 1; }; \
+		echo "    link $(SBIN_DIR)/$$t -> $$target"; \
+		ln -sfh "$$target" "$(SBIN_DIR)/$$t"; \
 	done
 
 postinstall:
 	@echo "ext2fs: installed kext, fs."
+
+# Uninstall. installer/uninstall.sh is the single description of what an
+# uninstall removes; this target only escalates into it.
+uninstall:
+	@test "$$(id -u)" -eq 0 || { echo "==> make uninstall must be run as root"; exit 1; }
+	@/bin/bash installer/uninstall.sh
 
 # ---------------------------------------------------------------------------
 # Clean  (never needs sudo: the build never produces root-owned files)
@@ -211,6 +279,6 @@ clean:
 	$(MAKE) -C tests clean
 	$(MAKE) -C tools clean
 
-.PHONY: all kextfs tools tests check distcheck debug release \
+.PHONY: all kextfs tools tests check distcheck debug release pkg dmg \
         install preinstall install-kext install-fs install-tools \
-        postinstall clean
+        postinstall uninstall clean

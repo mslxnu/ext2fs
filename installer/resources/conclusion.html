@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: -apple-system, sans-serif; font-size: 13px;">
+
+<p><b>ext2fs is installed, but not yet running.</b></p>
+
+<p>macOS will not load a third-party file system extension until you allow it:</p>
+
+<ol>
+  <li>Open <b>System Settings &rsaquo; General &rsaquo; Login Items &amp;
+      Extensions</b>, and allow the extension from
+      <i>com.beako.filesystems</i>. On some versions this appears under
+      <b>Privacy &amp; Security</b> instead, as a message about blocked system
+      software.</li>
+  <li><b>Restart your Mac.</b></li>
+</ol>
+
+<p>After the restart, connecting an ext2 volume mounts it in the Finder. From a
+Terminal you can also use:</p>
+
+<ul>
+  <li><code>newfs_ext2fs</code> &mdash; create an ext2 file system</li>
+  <li><code>fsck_ext2fs</code> &mdash; check and repair one</li>
+</ul>
+
+<p>To remove ext2fs, run <b>Uninstall ext2fs.command</b> from the disk image
+this installer came in.</p>
+
+<p style="color:#a00;"><b>Remember:</b> keep a backup of anything you care
+about on an ext2 volume. Volumes with ext3 or ext4 features are mounted
+read-only by design.</p>
+
+</body>
+</html>

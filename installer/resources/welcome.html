@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: -apple-system, sans-serif; font-size: 13px;">
+
+<p>This installs <b>ext2fs</b>, a native ext2 file system for macOS, so that
+ext2 volumes mount like any other disk.</p>
+
+<p>Two things are installed:</p>
+
+<ul>
+  <li><code>/Library/Extensions/ext2fs.kext</code> &mdash; the file system
+      itself</li>
+  <li><code>/Library/Filesystems/ext2fs.fs</code> &mdash; the bundle that lets
+      the system recognise, mount, format and check ext2 media. It carries
+      <code>newfs_ext2fs</code> and <code>fsck_ext2fs</code>, which are also
+      linked into <code>/usr/local/sbin</code>.</li>
+</ul>
+
+<p><b>A restart is required.</b> macOS will not load a third-party file system
+extension until you approve it in System Settings and restart; the last page of
+this installer explains how.</p>
+
+<p><b>Please read this before installing.</b> This file system is new and has
+had limited testing on real volumes. Do not use it for data you have not backed
+up elsewhere. Volumes using ext3 or ext4 features &mdash; a journal, or extents
+&mdash; are mounted read-only, because writing to them safely is not
+implemented.</p>
+
+</body>
+</html>

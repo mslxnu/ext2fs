@@ -1,0 +1,48 @@
+#!/bin/bash
+#
+# ext2fs installer postinstall.
+#
+# The payload - ext2fs.kext and ext2fs.fs - has already been laid down with
+# root:wheel ownership. What is left is the part that is not a file copy:
+# clearing any stale staged copy of an older build, and putting newfs_ext2fs
+# and fsck_ext2fs on PATH.
+#
+set -e
+
+EXT_DIR=/Library/Extensions
+FS_DIR=/Library/Filesystems
+SBIN_DIR=/usr/local/sbin
+BUNDLE_ID=com.beako.filesystems.ext2fs
+RESOURCES="$FS_DIR/ext2fs.fs/Contents/Resources"
+
+# macOS caches third-party kexts in the Auxiliary Kernel Collection. If an
+# older ext2fs is staged there it shadows what was just installed, and the new
+# build is never the one that loads. Best-effort: on a system where no ext2fs
+# has ever been loaded there is nothing to clear.
+kmutil clear-staging 2>/dev/null || true
+
+# newfs_ext2fs and fsck_ext2fs live in the bundle - that is where
+# diskarbitrationd looks for them - and are linked onto PATH rather than
+# copied, so there is only ever one binary of each. This mirrors the system's
+# own file systems: /sbin/fsck_msdos is a symlink into msdos.fs.
+#
+# mount_ext2fs is deliberately not linked. Nothing invokes it by hand; only
+# diskarbitrationd does, through the bundle.
+install -d "$SBIN_DIR"
+for t in newfs_ext2fs fsck_ext2fs; do
+    if [ -f "$RESOURCES/$t" ]; then
+        ln -sfh "$RESOURCES/$t" "$SBIN_DIR/$t"
+    fi
+done
+
+# The package is usually downloaded, so its payload inherits
+# com.apple.quarantine; that makes Gatekeeper treat the kext as untrusted.
+# Strip it now that the files are in place. Best-effort.
+xattr -dr com.apple.quarantine "$EXT_DIR/ext2fs.kext" 2>/dev/null || true
+xattr -dr com.apple.quarantine "$FS_DIR/ext2fs.fs"    2>/dev/null || true
+
+# The kext is not loaded here. A third-party kext needs the user's approval in
+# System Settings > Privacy & Security, followed by a restart, before the
+# system will load it at all - so loading it now would either fail or prompt
+# in the middle of an install. The conclusion pane tells the user what to do.
+exit 0

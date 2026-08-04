@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  There is no <license> pane here, unlike the sibling procfs installer: this
+  tree carries no LICENSE file. The sources are BSD-licensed (Berkeley,
+  FreeBSD, OpenBSD) with additions of the author's own; adding a LICENSE file
+  at the top level and a <license file="LICENSE" .../> line here is all that
+  is needed to show it.
+-->
+<installer-gui-script minSpecVersion="2">
+    <title>ext2fs __KEXTVERSION__</title>
+    <organization>com.beako.filesystems</organization>
+    <options customize="never" require-scripts="true"
+             hostArchitectures="arm64,x86_64" rootVolumeOnly="true"/>
+
+    <welcome    file="welcome.html"    mime-type="text/html"/>
+    <conclusion file="conclusion.html" mime-type="text/html"/>
+
+    <choices-outline>
+        <line choice="default">
+            <line choice="ext2fs"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="ext2fs" title="ext2fs" visible="false">
+        <pkg-ref id="com.beako.filesystems.ext2fs.pkg"/>
+    </choice>
+
+    <pkg-ref id="com.beako.filesystems.ext2fs.pkg" version="__KEXTVERSION__"
+             onConclusion="none">ext2fs-component.pkg</pkg-ref>
+</installer-gui-script>

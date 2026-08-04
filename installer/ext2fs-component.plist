@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  pkgbuild component settings for the ext2fs payload.
+
+  Both payloads are bundles - ext2fs.kext and ext2fs.fs - and pkgbuild marks
+  bundles relocatable by default. A relocatable payload is redirected to
+  wherever the installer finds an existing bundle with the same identifier,
+  which for anyone who has ever built this tree means the copy sitting in
+  out/. The install would then appear to succeed while /Library/Extensions
+  and /Library/Filesystems stayed empty. Both are forced non-relocatable so
+  they land where the package says.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<array>
+	<dict>
+		<key>BundleIsRelocatable</key><false/>
+		<key>BundleIsVersionChecked</key><true/>
+		<key>BundleOverwriteAction</key><string>upgrade</string>
+		<key>RootRelativeBundlePath</key><string>Library/Extensions/ext2fs.kext</string>
+	</dict>
+	<dict>
+		<key>BundleIsRelocatable</key><false/>
+		<key>BundleIsVersionChecked</key><true/>
+		<key>BundleOverwriteAction</key><string>upgrade</string>
+		<key>RootRelativeBundlePath</key><string>Library/Filesystems/ext2fs.fs</string>
+	</dict>
+</array>
+</plist>
