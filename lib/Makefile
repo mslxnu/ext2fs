@@ -1,30 +1,31 @@
 #
-# All-in-one Makefile
+# Kernel-side static libraries linked into the kext.
 #
-# All three are submodules carried over from the procfs project. Only libkext
-# is actually used: kext/ext2fs.c calls libkext_vma_uuid() and
-# libkext_massert(). libsbuf and libbsdmalloc contribute no code to the linked
-# kext - nothing in kext/ references sbuf_* or the bsdmalloc allocator - so the
-# -lsbuf and -lbsdmalloc in kext/Makefile are inert. They are still built and
-# linked rather than dropped, because removing them means deinitialising the
-# submodules, which is a separate decision.
+# libkext is the only one left. It is a submodule carried over from the procfs
+# project, and it is genuinely used: kext/ext2fs.c calls libkext_vma_uuid() and
+# libkext_massert().
+#
+# libsbuf went because nothing here ever referenced sbuf_*. libbsdmalloc was
+# load-bearing despite appearances - it shadowed <sys/malloc.h> to add the
+# FreeBSD malloc(size, type, flags) / free(addr, type) spelling, and supplied
+# those two functions from a static library. include/bsdcompat/sys/malloc.h
+# now does the same job with inline wrappers over _MALLOC()/_FREE(), which are
+# exported BSD KPI, so no library is needed.
 #
 
 MAKE=make
 
+SUBDIRS=	libkext
+
 all: debug
 
 debug:
-	$(MAKE) -C libbsdmalloc
-	$(MAKE) -C libsbuf
-	$(MAKE) -C libkext
+	@for d in $(SUBDIRS); do $(MAKE) -C $$d || exit 1; done
 
 release: TARGET=release
 release: debug
 
 clean:
-	$(MAKE) -C libbsdmalloc clean
-	$(MAKE) -C libsbuf clean
-	$(MAKE) -C libkext clean
+	@for d in $(SUBDIRS); do $(MAKE) -C $$d clean || exit 1; done
 
 .PHONY: all debug release clean

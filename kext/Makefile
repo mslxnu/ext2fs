@@ -95,8 +95,6 @@ CFLAGS+= -target $(TARGET_TRIPLE) \
          -mkernel \
          -fno-stack-check \
          -fno-stack-protector \
-         -I../lib/libbsdmalloc/include \
-         -I../lib/libsbuf/include \
          -I../lib/libkext/include \
          -I../include/bsdcompat \
          -I../include \
@@ -128,11 +126,9 @@ LDFLAGS+= -target $(TARGET_TRIPLE) \
 # against libSystem; they belong to the tools, not to the kext, and linking them
 # here would drag in unresolved userland symbols.
 LIBS+= -L$(KERNEL_LIBDIR) \
-       -L../lib/libkext \
-       -L../lib/libsbuf \
-       -L../lib/libbsdmalloc
+       -L../lib/libkext
 
-LIBS+= -lkmod -lkext -lsbuf -lbsdmalloc
+LIBS+= -lkmod -lkext
 
 KLFLAGS+= -xml -c -undef-symbols
 

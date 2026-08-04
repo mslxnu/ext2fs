@@ -4,12 +4,6 @@
 [submodule "vendor/libutil"]
 	path = vendor/libutil
 	url = https://github.com/apple-oss-distributions/libutil.git
-[submodule "lib/libbsdmalloc"]
-	path = lib/libbsdmalloc
-	url = git@github.com:somestupidgirl/libbsdmalloc.git
-[submodule "libsbuf"]
-	path = lib/libsbuf
-	url = git@github.com:somestupidgirl/libsbuf.git
 [submodule "lib/libkext"]
 	path = lib/libkext
 	url = git@github.com:somestupidgirl/libkext.git
