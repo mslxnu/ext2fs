@@ -146,6 +146,14 @@ __BEGIN_DECLS
 int	ext2_init(void);
 int	ext2_fini(void);
 
+/*
+ * In-core inode hash. Declared here as well as in ext2_extern.h so the module
+ * entry point can create and destroy it without pulling in the whole of the
+ * file system's internal interface.
+ */
+int	ext2_ihashinit(void);
+void	ext2_ihashdestroy(void);
+
 __END_DECLS
 
 #endif /* KERNEL */

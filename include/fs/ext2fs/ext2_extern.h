@@ -81,7 +81,7 @@ void	ext2_ihashrem(struct inode *);
  * The file system's own vget. XNU keeps the VFS_* dispatch macros to itself,
  * so ext2_valloc() calls this directly rather than going through VFS_VGET.
  */
-int	ext2_vget(struct mount *, ino_t, struct vnode **, vfs_context_t);
+int	ext2_vget(struct mount *, ino64_t, struct vnode **, vfs_context_t);
 int	ext2_valloc(struct vnode *, int, struct ucred *, struct vnode **);
 int	ext2_vfree(struct vnode *, ino_t, int);
 int	ext2_vinit(struct mount *, struct vop_vector *, struct vnode **vpp);

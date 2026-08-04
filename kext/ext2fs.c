@@ -26,6 +26,12 @@
 #include <fs/ext2fs/ext2_apple.h>
 
 #pragma mark -
+#pragma mark External references
+
+extern struct vfs_fsentry ext2fs_vfsentry;
+extern vfstable_t ext2fs_vfs_table_ref;
+
+#pragma mark -
 #pragma mark Module-wide state
 
 OSMallocTag	ext2_osmalloc_tag;
@@ -60,6 +66,18 @@ ext2_init(void)
 		return ENOMEM;
 	}
 
+	/*
+	 * The in-core inode hash needs the lock group, so it is created after
+	 * it and torn down before it in ext2_fini().
+	 */
+	if (ext2_ihashinit() != 0) {
+		lck_grp_free(ext2_lck_grp);
+		ext2_lck_grp = NULL;
+		OSMalloc_Tagfree(ext2_osmalloc_tag);
+		ext2_osmalloc_tag = NULL;
+		return ENOMEM;
+	}
+
 	initialized = 1;
 
 	return 0;
@@ -73,6 +91,8 @@ ext2_init(void)
 int
 ext2_fini(void)
 {
+	ext2_ihashdestroy();
+
 	if (ext2_lck_grp != NULL) {
 		lck_grp_free(ext2_lck_grp);
 		ext2_lck_grp = NULL;
@@ -110,6 +130,17 @@ ext2_start(kmod_info_t *ki, __unused void *d)
 
 	os_log(OS_LOG_DEFAULT, "lock group(%s) allocated \n", EXT2_LCKGRP_NAME);
 
+	ret = vfs_fsadd(&ext2fs_vfsentry, &ext2fs_vfs_table_ref);
+	if (ret != 0) {
+		os_log(OS_LOG_DEFAULT, "vfs_fsadd() failed  errno: %d \n", ret);
+		ext2fs_vfs_table_ref = NULL;
+		ext2_fini();
+		return KERN_FAILURE;
+	}
+
+	os_log(OS_LOG_DEFAULT, "%s file system registered \n",
+	    ext2fs_vfsentry.vfe_fsname);
+
 	os_log(OS_LOG_DEFAULT, "loaded %s version %s build %s (%s) \n",
 	    BUNDLEID_S, KEXTVERSION_S, KEXTBUILD_S, __TS__);
 
@@ -126,6 +157,16 @@ ext2_stop(kmod_info_t *ki, __unused void *d)
 	if (ret != 0) {
 		os_log(OS_LOG_DEFAULT, "libkext_vma_uuid() failed  errno: %d \n", ret);
 		return KERN_FAILURE;
+	}
+
+	if (ext2fs_vfs_table_ref != NULL) {
+		ret = vfs_fsremove(ext2fs_vfs_table_ref);
+		if (ret != 0) {
+			os_log(OS_LOG_DEFAULT,
+			    "vfs_fsremove() failed  errno: %d \n", ret);
+			return KERN_FAILURE;
+		}
+		ext2fs_vfs_table_ref = NULL;
 	}
 
 	ext2_fini();
