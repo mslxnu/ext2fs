@@ -160,7 +160,12 @@ ext2_mountfs(struct vnode *devvp, struct mount *mp, vfs_context_t ctx)
 	if (error != 0)
 		goto out;
 	es = (struct ext2fs *)buf_dataptr(bp);
-	if (ext2_check_sb_compat(es, ronly) != 0) {
+	error = ext2_check_sb_compat(es, ronly);
+	if (error == 2) {
+		/* Mountable, but not the way it was asked for. */
+		error = EROFS;
+		goto out;
+	} else if (error != 0) {
 		error = EINVAL;
 		goto out;
 	}
@@ -655,30 +660,101 @@ ext2_flushfiles(struct mount *mp, int flags, vfs_context_t ctx)
 	(void)ctx;
 }
 
+/*
+ * Decide whether this superblock describes a file system we can mount, and
+ * whether we can write to it.
+ *
+ * FreeBSD's version checked only the magic number and the feature masks. The
+ * geometry checks below come from OpenBSD's e2fs_sbcheck(), and they matter
+ * here for a specific reason: every field is attacker-controlled if the volume
+ * is, and two of them are used in arithmetic that goes badly wrong on bad
+ * input. e2fs_log_bsize feeds shift counts - e2fs_bshift and e2fs_fsbtodb -
+ * where a large value is undefined behaviour rather than merely a wrong
+ * answer. e2fs_bpg is a divisor in dtog() and ino_to_cg(), and on arm64 an
+ * integer divide by zero yields zero instead of trapping, so a zero there
+ * would not crash: it would quietly place every block in group 0.
+ */
 static int
 ext2_check_sb_compat(struct ext2fs *es, int ronly)
 {
+	uint32_t mask, tmp;
+	size_t i;
 
 	if (es->e2fs_magic != E2FS_MAGIC) {
-		printf("ext2fs: %s: wrong magic number %#x (expected %#x)\n",
-		    "ext2fs", es->e2fs_magic, E2FS_MAGIC);
+		printf("ext2fs: wrong magic number %#x (expected %#x)\n",
+		    es->e2fs_magic, E2FS_MAGIC);
 		return (1);
 	}
-	if (es->e2fs_rev > E2FS_REV0) {
-		if (es->e2fs_features_incompat & ~(EXT2F_INCOMPAT_SUPP |
-						   EXT4F_RO_INCOMPAT_SUPP)) {
-			printf(
-"WARNING: mount of %s denied due to unsupported optional features\n",
-			    "ext2fs");
-			return (1);
-		}
-		if (!ronly &&
-		    (es->e2fs_features_rocompat & ~EXT2F_ROCOMPAT_SUPP)) {
-			printf("WARNING: R/W mount of %s denied due to "
-			    "unsupported optional features\n", "ext2fs");
-			return (1);
-		}
+
+	/* Skewed log(block size): 1024 -> 0, 2048 -> 1, 4096 -> 2. */
+	if (es->e2fs_log_bsize > 2) {
+		printf("ext2fs: unsupported block size 2^%u\n",
+		    es->e2fs_log_bsize + 10);
+		return (1);
 	}
+
+	if (es->e2fs_bpg == 0) {
+		printf("ext2fs: zero blocks per group\n");
+		return (1);
+	}
+
+	if (es->e2fs_rev > E2FS_REV1) {
+		printf("ext2fs: unsupported revision number %#x\n",
+		    es->e2fs_rev);
+		return (1);
+	}
+	if (es->e2fs_rev == E2FS_REV0)
+		return (0);
+
+	if (es->e2fs_first_ino != EXT2_FIRSTINO) {
+		printf("ext2fs: unsupported first inode %u\n",
+		    es->e2fs_first_ino);
+		return (1);
+	}
+
+	/*
+	 * Incompatible features split three ways: those we implement, those we
+	 * can only read, and the rest.
+	 */
+	tmp = es->e2fs_features_incompat;
+	mask = tmp & ~(EXT2F_INCOMPAT_SUPP | EXT4F_RO_INCOMPAT_SUPP);
+	if (mask != 0) {
+		printf("ext2fs: unsupported incompat features:");
+		for (i = 0; i < nitems(ext2_incompat_names); i++)
+			if (mask & ext2_incompat_names[i].mask)
+				printf(" %s", ext2_incompat_names[i].name);
+		printf("\n");
+		return (1);
+	}
+
+	/*
+	 * The read-only set is where a missing check would do real damage.
+	 * The extent code here can walk an extent tree but not grow one, so a
+	 * write to an extent-mapped file would send ext2_balloc() off to
+	 * install indirect block pointers in an i_db that actually holds an
+	 * extent header. A journal awaiting replay is the same story from the
+	 * other end: writing before the transactions are applied loses them.
+	 */
+	if (!ronly && (tmp & EXT4F_RO_INCOMPAT_SUPP)) {
+		printf("ext2fs: read-only mount required for:");
+		for (i = 0; i < nitems(ext2_incompat_names); i++)
+			if (tmp & EXT4F_RO_INCOMPAT_SUPP &
+			    ext2_incompat_names[i].mask)
+				printf(" %s", ext2_incompat_names[i].name);
+		printf("\n");
+		return (2);
+	}
+
+	tmp = es->e2fs_features_rocompat & ~EXT2F_ROCOMPAT_SUPP;
+	if (!ronly && tmp != 0) {
+		printf("ext2fs: read-only mount required for:");
+		for (i = 0; i < nitems(ext2_rocompat_names); i++)
+			if (tmp & ext2_rocompat_names[i].mask)
+				printf(" %s", ext2_rocompat_names[i].name);
+		printf("\n");
+		return (2);
+	}
+
 	return (0);
 }
 
@@ -767,11 +843,38 @@ compute_sb_data(struct vnode *devvp, struct ext2fs *es,
 	for (i = 0; i < (int)fs->e2fs_gcount; i++)
 		fs->e2fs_total_dir += fs->e2fs_gd[i].ext2bgd_ndirs;
 
+	/*
+	 * Largest file this volume can hold.
+	 *
+	 * Two limits apply and the smaller wins. Logically, a file cannot
+	 * outgrow the block pointer tree: twelve direct blocks plus one, two
+	 * and three levels of indirection, b = bsize/4 pointers per block.
+	 * Physically, i_blocks counts 512-byte units in a 32-bit field, so
+	 * without the huge_file feature the file is capped at UINT_MAX of
+	 * them; huge_file widens that to 48 bits.
+	 *
+	 * The previous value here was INT64_MAX whenever large_file was set,
+	 * which is off by orders of magnitude - it let ext2_write() and
+	 * ext2_truncate() accept offsets the block tree cannot address, so
+	 * the failure surfaced later, from ext2_getlbns(), after the file had
+	 * already been extended. Taken from OpenBSD's ext2fs_maxfilesize().
+	 */
 	if (es->e2fs_rev == E2FS_REV0 ||
-	    !EXT2_HAS_RO_COMPAT_FEATURE(fs, EXT2F_ROCOMPAT_LARGEFILE))
+	    !EXT2_HAS_RO_COMPAT_FEATURE(fs, EXT2F_ROCOMPAT_LARGEFILE)) {
 		fs->e2fs_maxfilesize = 0x7fffffff;
-	else
-		fs->e2fs_maxfilesize = 0x7fffffffffffffff;
+	} else {
+		int huge = EXT2_HAS_RO_COMPAT_FEATURE(fs,
+		    EXT2F_ROCOMPAT_HUGE_FILE) ? 1 : 0;
+		off_t b = fs->e2fs_bsize / 4;
+		off_t physically, logically;
+
+		physically = dbtob(huge ? ((off_t)1 << 48) - 1 :
+		    (off_t)UINT_MAX);
+		logically = (12 + b + b * b + b * b * b) *
+		    (off_t)fs->e2fs_bsize;
+
+		fs->e2fs_maxfilesize = MIN(logically, physically);
+	}
 	return (0);
 }
 

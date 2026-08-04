@@ -767,10 +767,15 @@ ext2_dirbadentry(struct vnode *dp, struct ext2fs_direct_2 *de,
 		error_msg = "reclen is too small for name_len";
 	else if (entryoffsetinblock + de->e2d_reclen > DIRBLKSIZ)
 		error_msg = "directory entry across blocks";
-	/* else LATER
-	     if (de->inode > dir->i_sb->u.ext2_sb.s_es->s_inodes_count)
+	/*
+	 * The inode number was left unchecked here, marked "LATER". It cannot
+	 * be: ext2_lookup() hands whatever it finds to ext2_vget(), which
+	 * derives a group from it and indexes e2fs_gd[] with that, so an entry
+	 * naming an inode past the end of the file system reads outside the
+	 * group descriptor array. OpenBSD checks it, and so does this now.
+	 */
+	else if (de->e2d_ino > VTOI(dp)->i_e2fs->e2fs->e2fs_icount)
 		error_msg = "inode out of bounds";
-	*/
 
 	if (error_msg != NULL) {
 		printf("bad directory entry: %s\n", error_msg);
