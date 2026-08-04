@@ -32,11 +32,13 @@ CSRCS:=   ext2fs.c \
           ext2_inode.c \
           ext2_inode_cnv.c \
           ext2_lookup.c \
+          ext2_readwrite.c \
           ext2_subr.c \
           ext2_vfsops.c \
           ext2_vnops.c
 
-PENDING_CSRCS:= ext2_readwrite.c
+# Nothing left pending: every imported source is ported and built.
+PENDING_CSRCS:=
 
 OBJS:=    $(CSRCS:.c=.o)
 

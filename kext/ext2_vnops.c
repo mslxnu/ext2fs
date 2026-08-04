@@ -97,6 +97,12 @@ static int	ext2_readlink(struct vnop_readlink_args *);
 static int	ext2_pathconf(struct vnop_pathconf_args *);
 static int	ext2_strategy(struct vnop_strategy_args *);
 
+/* The file data path, in ext2_readwrite.c. */
+int	ext2_read(struct vnop_read_args *);
+int	ext2_write(struct vnop_write_args *);
+int	ext2_pagein(struct vnop_pagein_args *);
+int	ext2_pageout(struct vnop_pageout_args *);
+
 /*
  * Four operations from the FreeBSD file are gone rather than ported:
  *
@@ -159,6 +165,10 @@ static struct vnodeopv_entry_desc ext2_vnodeop_entries[] = {
 	{ .opve_op = &vnop_pathconf_desc,  .opve_impl = (VOPFUNC)ext2_pathconf },
 	{ .opve_op = &vnop_blockmap_desc,  .opve_impl = (VOPFUNC)ext2_blockmap },
 	{ .opve_op = &vnop_strategy_desc,  .opve_impl = (VOPFUNC)ext2_strategy },
+	{ .opve_op = &vnop_read_desc,      .opve_impl = (VOPFUNC)ext2_read },
+	{ .opve_op = &vnop_write_desc,     .opve_impl = (VOPFUNC)ext2_write },
+	{ .opve_op = &vnop_pagein_desc,    .opve_impl = (VOPFUNC)ext2_pagein },
+	{ .opve_op = &vnop_pageout_desc,   .opve_impl = (VOPFUNC)ext2_pageout },
 	{ .opve_op = (struct vnodeop_desc *)NULL, .opve_impl = (VOPFUNC)NULL }
 };
 
