@@ -223,9 +223,17 @@ ext2_mountfs(struct vnode *devvp, struct mount *mp, vfs_context_t ctx)
 	fs->e2fs_contigsumsize = MIN(e2fs_maxcontig, EXT2_MAXCONTIG);
 	if (fs->e2fs_contigsumsize > 0) {
 		size = (int)(fs->e2fs_gcount * sizeof(int32_t));
-		fs->e2fs_maxcluster = _MALLOC(size, M_TEMP, M_WAITOK);
+		fs->e2fs_maxcluster = _MALLOC(size, M_TEMP, M_WAITOK | M_ZERO);
 		size = (int)(fs->e2fs_gcount * sizeof(struct csum));
-		fs->e2fs_clustersum = _MALLOC(size, M_TEMP, M_WAITOK);
+		/*
+		 * M_ZERO matters here. The loop below fills in every cs_sum,
+		 * but it can leave partway through on ENOMEM, and both the
+		 * error path and ext2_unmount() then walk all e2fs_gcount
+		 * entries handing each cs_sum to _FREE(). Uninitialised, the
+		 * untouched tail would be heap garbage passed to the
+		 * allocator as if it were a pointer.
+		 */
+		fs->e2fs_clustersum = _MALLOC(size, M_TEMP, M_WAITOK | M_ZERO);
 		if (fs->e2fs_maxcluster == NULL ||
 		    fs->e2fs_clustersum == NULL) {
 			error = ENOMEM;
@@ -284,10 +292,28 @@ out:
 		if (ump->um_lock != NULL)
 			lck_mtx_free(ump->um_lock, ext2_lck_grp);
 		if (ump->um_e2fs != NULL) {
-			_FREE(ump->um_e2fs->e2fs_gd, M_TEMP);
-			_FREE(ump->um_e2fs->e2fs_contigdirs, M_TEMP);
-			_FREE(ump->um_e2fs->e2fs, M_TEMP);
-			_FREE(ump->um_e2fs, M_TEMP);
+			struct m_ext2fs *ofs = ump->um_e2fs;
+
+			/*
+			 * The cluster summary can be half-built if the loop
+			 * above stopped on ENOMEM. Every cs_sum is either a
+			 * live allocation or NULL, because the array is
+			 * M_ZERO, so freeing the whole span is safe.
+			 */
+			if (ofs->e2fs_clustersum != NULL) {
+				struct csum *osump = ofs->e2fs_clustersum;
+				int j;
+
+				for (j = 0; j < (int)ofs->e2fs_gcount;
+				    j++, osump++)
+					_FREE(osump->cs_sum, M_TEMP);
+				_FREE(ofs->e2fs_clustersum, M_TEMP);
+			}
+			_FREE(ofs->e2fs_maxcluster, M_TEMP);
+			_FREE(ofs->e2fs_gd, M_TEMP);
+			_FREE(ofs->e2fs_contigdirs, M_TEMP);
+			_FREE(ofs->e2fs, M_TEMP);
+			_FREE(ofs, M_TEMP);
 		}
 		_FREE(ump, M_TEMP);
 		vfs_setfsprivate(mp, NULL);

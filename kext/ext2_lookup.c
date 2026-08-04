@@ -155,6 +155,15 @@ ext2_readdir(struct vnop_readdir_args *ap)
 		return (EINVAL);
 	ip = VTOI(vp);
 
+	/*
+	 * Zero the whole record before any of it is filled in. Each entry is
+	 * copied out with uiomove() for d_reclen bytes, which is rounded up to
+	 * a four-byte boundary and so covers padding past the end of the name.
+	 * Without this, those bytes are whatever was on the kernel stack, and
+	 * every readdir(2) hands a few of them to user space.
+	 */
+	bzero(&dstdp, sizeof(dstdp));
+
 	offset = startoffset = uio_offset(uio);
 	startresid = uio_resid(uio);
 	error = 0;

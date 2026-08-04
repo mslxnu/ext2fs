@@ -82,10 +82,17 @@ ext2_update(struct vnode *vp, int waitfor)
 	ip = VTOI(vp);
 	if ((ip->i_flag & IN_MODIFIED) == 0 && waitfor == 0)
 		return (0);
-	ip->i_flag &= ~(IN_LAZYACCESS | IN_LAZYMOD | IN_MODIFIED);
 	fs = ip->i_e2fs;
-	if(fs->e2fs_ronly)
+	/*
+	 * Test this before clearing the flags, not after. Clearing them first
+	 * and then returning without writing would tell the rest of the file
+	 * system the inode had been written back when it had not - harmless
+	 * while the mount stays read-only, and a silently lost update the
+	 * moment it is upgraded to read-write.
+	 */
+	if (fs->e2fs_ronly)
 		return (0);
+	ip->i_flag &= ~(IN_LAZYACCESS | IN_LAZYMOD | IN_MODIFIED);
 	error = buf_meta_bread(ip->i_devvp,
 	    (daddr64_t)fsbtodb(fs, ino_to_fsba(fs, ip->i_number)),
 	    (int)fs->e2fs_bsize, NOCRED, &bp);
@@ -573,6 +580,21 @@ ext2_reclaim(struct vnop_reclaim_args *ap)
 		lck_mtx_free(ip->i_lock, ext2_lck_grp);
 		ip->i_lock = NULL;
 	}
+
+	/*
+	 * Give back the named reference taken by VNFS_ADDFSREF in ext2_vget().
+	 *
+	 * This is not optional. <sys/vnode.h> states it plainly: "VFS assumes
+	 * that an unused vnode will not be marked as referenced by a file
+	 * system." The mark is VNAMED_FSHASH, and a reclaimed vnode that still
+	 * carries it goes onto the free list looking like it is still in our
+	 * hash. When the vnode layer later takes it back off the free list to
+	 * reuse, process_vp() finds the flag set and panics with "free vnode
+	 * still referenced" - at an arbitrary later moment, in whichever
+	 * subsystem happened to ask for a vnode, with nothing pointing back
+	 * here.
+	 */
+	vnode_removefsref(vp);
 
 	/*
 	 * Detach before freeing: after this the vnode has no file system data,
