@@ -53,14 +53,17 @@ CFLAGS+=     -D__TS__=\"$(TIME_STAMP)\"
 
 # ext2fs builds against the public Kernel.framework KPI only.
 #
-# The sibling procfs kext compiles with the vendored XNU tree under
-# include/xnu and the full set of kernel-private defines, because it walks
-# private structures - struct proc and its file descriptor table - whose layout
-# is not published. A file system needs none of that: vnodes, buffers, mounts
-# and locks are all public KPI, so those headers are deliberately not on the
-# include path here. Relying on them would mean compiling against struct
-# layouts that are not guaranteed to match the running kernel, and referencing
-# symbols the KPI does not export.
+# The sibling procfs kext compiles with a vendored XNU tree and the full set of
+# kernel-private defines, because it walks private structures - struct proc and
+# its file descriptor table - whose layout is not published. A file system needs
+# none of that: vnodes, buffers, mounts and locks are all public KPI. This tree
+# carried a copy of those private headers for a while; it no longer does, and
+# nothing here should put them back. Relying on them would mean compiling
+# against struct layouts not guaranteed to match the running kernel.
+#
+# Note that the public headers are not by themselves a guarantee: they declare
+# some symbols the kernel does not export to kexts, which link cleanly and then
+# fail at load. fls() is one - see ext2_fls() in <fs/ext2fs/ext2_apple.h>.
 #
 # _KERNEL is the BSD spelling of "this translation unit is kernel code". XNU
 # itself uses KERNEL and never tests _KERNEL (the single occurrence, in

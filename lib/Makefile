@@ -1,10 +1,13 @@
 #
 # All-in-one Makefile
 #
-# libreadfile is intentionally not built: nothing in procfs uses read_file()
-# yet. The submodule is kept in lib/ for future use; add it back here (and
-# link -lreadfile with -I../lib/libreadfile/include in kext/Makefile) when a
-# consumer appears.
+# All three are submodules carried over from the procfs project. Only libkext
+# is actually used: kext/ext2fs.c calls libkext_vma_uuid() and
+# libkext_massert(). libsbuf and libbsdmalloc contribute no code to the linked
+# kext - nothing in kext/ references sbuf_* or the bsdmalloc allocator - so the
+# -lsbuf and -lbsdmalloc in kext/Makefile are inert. They are still built and
+# linked rather than dropped, because removing them means deinitialising the
+# submodules, which is a separate decision.
 #
 
 MAKE=make
