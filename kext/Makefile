@@ -78,6 +78,19 @@ CFLAGS+= -DKERNEL \
          -D_KERNEL \
          -D_DARWIN_C_SOURCE
 
+# Diagnostic switch, off by default. Build with
+#
+#	make UNMOUNT_MINIMAL=1
+#
+# and ext2_unmount() returns straight after flushing the vnodes, releasing
+# nothing and freeing nothing. The mount leaks and the volume cannot be
+# remounted without reloading the kext; it exists to bisect a machine freeze on
+# umount that produces no panic, by taking the entire teardown out of the
+# picture in one build. Never ship this.
+ifdef UNMOUNT_MINIMAL
+CFLAGS+= -DEXT2_UNMOUNT_MINIMAL
+endif
+
 ifeq ($(findstring arm64,$(TARGET_TRIPLE)),arm64)
 ARCH_SYS_INCLUDES := -isystem $(KERNEL_HEADERS)/arm64 -isystem $(KERNEL_HEADERS)/arm
 else

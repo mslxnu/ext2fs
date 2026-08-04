@@ -341,6 +341,28 @@ ext2_unmount(struct mount *mp, int mntflags, vfs_context_t ctx)
 	if ((error = ext2_flushfiles(mp, flags, ctx)) != 0)
 		return (error);
 
+#ifdef EXT2_UNMOUNT_MINIMAL
+	/*
+	 * Diagnostic build only - see kext/Makefile.
+	 *
+	 * Stop here, before any of the teardown below: release nothing, free
+	 * nothing, leave the device vnode's iocount held. The mount leaks
+	 * entirely and the volume cannot be mounted again without unloading
+	 * the kext, which is fine for one measurement.
+	 *
+	 * The point is to bisect a machine freeze on umount that leaves no
+	 * panic - the signature of a wild write rather than a deadlock. The
+	 * vnodes are already reclaimed by ext2_flushfiles() above, so if the
+	 * freeze survives this, nothing below is responsible and the fault is
+	 * in the mount path or in reclaim. If it goes away, it is in the
+	 * teardown that follows.
+	 */
+	printf("ext2fs: EXT2_UNMOUNT_MINIMAL: skipping teardown\n");
+	vfs_setfsprivate(mp, NULL);
+	vfs_clearflags(mp, MNT_LOCAL);
+	return (0);
+#endif
+
 	ump = VFSTOEXT2(mp);
 	fs = ump->um_e2fs;
 	ronly = fs->e2fs_ronly;
