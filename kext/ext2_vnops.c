@@ -164,6 +164,8 @@ static struct vnodeopv_entry_desc ext2_vnodeop_entries[] = {
 	{ .opve_op = &vnop_reclaim_desc,   .opve_impl = (VOPFUNC)ext2_reclaim },
 	{ .opve_op = &vnop_pathconf_desc,  .opve_impl = (VOPFUNC)ext2_pathconf },
 	{ .opve_op = &vnop_blockmap_desc,  .opve_impl = (VOPFUNC)ext2_blockmap },
+	{ .opve_op = &vnop_blktooff_desc,  .opve_impl = (VOPFUNC)ext2_blktooff },
+	{ .opve_op = &vnop_offtoblk_desc,  .opve_impl = (VOPFUNC)ext2_offtoblk },
 	{ .opve_op = &vnop_strategy_desc,  .opve_impl = (VOPFUNC)ext2_strategy },
 	{ .opve_op = &vnop_read_desc,      .opve_impl = (VOPFUNC)ext2_read },
 	{ .opve_op = &vnop_write_desc,     .opve_impl = (VOPFUNC)ext2_write },

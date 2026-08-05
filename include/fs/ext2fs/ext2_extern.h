@@ -60,6 +60,8 @@ e4fs_daddr_t	ext2_blkpref(struct inode *, e2fs_lbn_t, int, e2fs_daddr_t *,
  * block-based interface the imported code uses.
  */
 int	ext2_blockmap(struct vnop_blockmap_args *);
+int	ext2_blktooff(struct vnop_blktooff_args *);
+int	ext2_offtoblk(struct vnop_offtoblk_args *);
 int	ext2_bmaparray(struct vnode *, daddr64_t, daddr64_t *, int *, int *);
 void	ext2_clusteracct(struct m_ext2fs *, char *, int, daddr64_t, int);
 void	ext2_dirbad(struct inode *ip, doff_t offset, char *how);

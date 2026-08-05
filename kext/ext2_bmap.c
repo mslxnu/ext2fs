@@ -134,6 +134,50 @@ ext2_blockmap(struct vnop_blockmap_args *ap)
 }
 
 /*
+ * Convert between a file's logical block numbers and byte offsets.
+ *
+ * FreeBSD has no counterpart: its VOP_BMAP works in logical blocks
+ * throughout, so nothing ever needs to translate. XNU splits the two apart -
+ * VNOP_BLOCKMAP is byte-based - and then needs a way back, so every file
+ * system that puts metadata through the buffer cache has to supply this pair.
+ *
+ * They are not optional decoration. buf_strategy() calls VNOP_BLKTOOFF() to
+ * turn the buffer's logical block number into the offset it then hands to
+ * VNOP_BLOCKMAP(), and cluster I/O calls VNOP_OFFTOBLK() for the reverse.
+ * Without them the call lands on vn_default_error(), so every read of a
+ * directory block through the directory's own vnode failed with ENOTSUP and
+ * the volume mounted but could not be listed. Reads issued against the device
+ * vnode - the superblock, the group descriptors, the inode blocks - go through
+ * spec_strategy() and never touch this vector, which is why the mount itself
+ * worked.
+ */
+int
+ext2_blktooff(struct vnop_blktooff_args *ap)
+{
+	struct inode *ip = VTOI(ap->a_vp);
+
+	if (ap->a_offset == NULL)
+		return (EINVAL);
+
+	*ap->a_offset = (off_t)ap->a_lblkno * (off_t)ip->i_e2fs->e2fs_bsize;
+
+	return (0);
+}
+
+int
+ext2_offtoblk(struct vnop_offtoblk_args *ap)
+{
+	struct inode *ip = VTOI(ap->a_vp);
+
+	if (ap->a_lblkno == NULL)
+		return (EINVAL);
+
+	*ap->a_lblkno = (daddr64_t)(ap->a_offset / (off_t)ip->i_e2fs->e2fs_bsize);
+
+	return (0);
+}
+
+/*
  * This function converts the logical block number of a file to
  * its physical block number on the disk within ext4 extents.
  */
