@@ -6,7 +6,7 @@
 	url = https://github.com/apple-oss-distributions/libutil.git
 [submodule "lib/libkext"]
 	path = lib/libkext
-	url = git@github.com:somestupidgirl/libkext.git
+	url = https://github.com/somestupidgirl/libkext.git
 [submodule "vendor/CoreOSMakefiles"]
 	path = vendor/CoreOSMakefiles
 	url = https://github.com/apple-oss-distributions/CoreOSMakefiles.git

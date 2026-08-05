@@ -12,6 +12,31 @@ jobs:
     runs-on: macos-26
 
     steps:
+    # The kext links -lkext out of lib/libkext and the userland tools include
+    # mntopts.h from vendor/libutil, so a checkout without submodules leaves
+    # empty directories and the build stops at the first `make -C` into one.
     - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
     - name: make
       run: make
+
+    # The default target builds everything but runs none of it. This is the
+    # cheapest check that the tools work: create a file system with newfs and
+    # then check it with our fsck, which reads the layout independently.
+    # Neither needs root, so it costs a couple of seconds.
+    - name: newfs / fsck round trip
+      run: |
+        set -eu
+        R=out/ext2fs.fs/Contents/Resources
+        # Spelled in bytes: BSD dd takes bs=1m, GNU dd takes bs=1M, both take
+        # this. The runner has the BSD one, but that is not worth depending on.
+        dd if=/dev/zero of=ci.img bs=1048576 count=64
+        "$R/newfs_ext2fs" -F ci.img
+        "$R/fsck_ext2fs" -f -n ci.img
+        # A clean file system has to be idempotent under fsck: checking it
+        # again in no-op mode must leave the image byte for byte identical.
+        shasum ci.img > before.sum
+        "$R/fsck_ext2fs" -f -n ci.img
+        shasum -c before.sum
