@@ -348,10 +348,13 @@ ext2_unmount(struct mount *mp, int mntflags, vfs_context_t ctx)
 	 * machine freeze on umount that produces no panic. Stage 1 has already
 	 * been shown to survive, which is what puts the fault below this line.
 	 *
-	 *   1  return now: nothing released, nothing freed
-	 *   2  + release the device (buf_invalidateblks, vnode_put)
+	 *   1  return now: nothing written back, nothing freed
+	 *   2  + write back the superblock and invalidate the device's buffers
 	 *   3  + free the superblock and the per-group arrays
 	 *   4  + free the mount lock and the mount itself (normal)
+	 *
+	 * This is what found the vnode_put() below, by bisecting to the one
+	 * stage that froze. Kept because the next fault here will want it.
 	 */
 #ifndef EXT2_UNMOUNT_STAGE
 #define	EXT2_UNMOUNT_STAGE	4
@@ -373,12 +376,24 @@ ext2_unmount(struct mount *mp, int mntflags, vfs_context_t ctx)
 	}
 
 	/*
-	 * Push anything still cached against the device and let go of it. The
-	 * close is the vfs layer's, matching the open it did before
-	 * VFS_MOUNT; FreeBSD released a GEOM consumer here instead.
+	 * Push anything still cached against the device, so a later mount does
+	 * not see stale metadata. FreeBSD released a GEOM consumer here.
+	 *
+	 * Nothing else is done to the device vnode, and in particular it is not
+	 * put. This file system never took a reference on it: the vfs layer
+	 * resolves the path, references and opens the device before VFS_MOUNT,
+	 * and unwinds all of that itself - vnode_rele() and VNOP_CLOSE() from
+	 * dounmount() after this returns, and the I/O count from namei() dropped
+	 * at the exit: label of mount_common(), where the comment reads "drop
+	 * I/O count on the device vp if there was one".
+	 *
+	 * A vnode_put() here was therefore releasing a count we never held.
+	 * vnode_put() panics on an I/O count below one, and it does so holding
+	 * the vnode spin lock with preemption disabled, which is why it came out
+	 * as an instant whole-machine freeze with no panic report rather than as
+	 * a panic. It froze on every single unmount.
 	 */
 	(void)buf_invalidateblks(ump->um_devvp, BUF_WRITE_DATA, 0, 0);
-	vnode_put(ump->um_devvp);
 #else
 	(void)ronly;
 	(void)fs;
