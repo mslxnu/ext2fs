@@ -12,6 +12,8 @@ set -e
 EXT_DIR=/Library/Extensions
 FS_DIR=/Library/Filesystems
 SBIN_DIR=/usr/local/sbin
+LAUNCHD_DIR=/Library/LaunchDaemons
+LAUNCHD_PLIST=com.beako.ext2fs.plist
 BUNDLE_ID=com.beako.filesystems.ext2fs
 RESOURCES="$FS_DIR/ext2fs.fs/Contents/Resources"
 
@@ -45,4 +47,9 @@ xattr -dr com.apple.quarantine "$FS_DIR/ext2fs.fs"    2>/dev/null || true
 # System Settings > Privacy & Security, followed by a restart, before the
 # system will load it at all - so loading it now would either fail or prompt
 # in the middle of an install. The conclusion pane tells the user what to do.
+#
+# The LaunchDaemon IS bootstrapped here so it is active on next boot once the
+# user arms it with `sudo touch /var/db/ext2fs.enabled`.
+launchctl bootstrap system "$LAUNCHD_DIR/$LAUNCHD_PLIST" 2>/dev/null || true
+
 exit 0

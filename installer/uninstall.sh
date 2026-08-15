@@ -17,6 +17,8 @@ BUNDLE_ID=com.beako.filesystems.ext2fs
 EXT_DIR=/Library/Extensions
 FS_DIR=/Library/Filesystems
 SBIN_DIR=/usr/local/sbin
+LAUNCHD_DIR=/Library/LaunchDaemons
+LAUNCHD_PLIST=com.beako.ext2fs.plist
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "uninstall.sh must be run as root." >&2
@@ -55,6 +57,10 @@ done
 echo "  - removing the installed bundles"
 rm -rf "$EXT_DIR/ext2fs.kext"
 rm -rf "$FS_DIR/ext2fs.fs"
+
+echo "  - removing the LaunchDaemon and loader script"
+rm -f "$LAUNCHD_DIR/$LAUNCHD_PLIST"
+rm -f "$SBIN_DIR/ext2fs-load"
 
 # Forget the installer receipt so a later install is treated as fresh rather
 # than as an upgrade over files that are no longer there.

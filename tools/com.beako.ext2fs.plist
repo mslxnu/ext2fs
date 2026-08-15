@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  ext2fs auto-load LaunchDaemon. Install to
+  /Library/LaunchDaemons/com.beako.ext2fs.plist (owned root:wheel, mode 644),
+  with the loader script at /usr/local/sbin/ext2fs-load, then:
+      sudo launchctl bootstrap system /Library/LaunchDaemons/com.beako.ext2fs.plist
+
+  RunAtLoad runs it once at boot. Being installed in /Library/Extensions and
+  prelinked into the auxKC does NOT start a kext - something has to ask
+  kernelmanagement to load it, and that is what this daemon does (the same way
+  the mSL-DevFS, mSL-ProcFS, and mSL-SysFS siblings are loaded).
+
+  Auto-load is gated behind /var/db/ext2fs.enabled so a fault in the kernel
+  code cannot boot-loop the machine; arm it with `sudo touch
+  /var/db/ext2fs.enabled` (see the ext2fs-load script).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.beako.ext2fs</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/sbin/ext2fs-load</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/ext2fs-load.log</string>
+    <key>StandardOutPath</key>
+    <string>/var/log/ext2fs-load.log</string>
+</dict>
+</plist>

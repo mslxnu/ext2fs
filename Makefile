@@ -9,6 +9,8 @@ OUT=out
 EXT_DIR        := /Library/Extensions
 FS_DIR         := /Library/Filesystems
 SBIN_DIR       := /usr/local/sbin
+LAUNCHD_DIR    := /Library/LaunchDaemons
+LAUNCHD_PLIST  := com.beako.ext2fs.plist
 
 # Identifiers / runtime files.
 BUNDLE_ID      := com.beako.filesystems.ext2fs
@@ -148,9 +150,10 @@ tools:
 pkg: kextfs tools
 	@echo "==> Staging installer payload"
 	rm -rf $(OUT)/pkgroot $(OUT)/pkgres
-	install -d $(OUT)/pkgroot/Library/Extensions $(OUT)/pkgroot/Library/Filesystems
+	install -d $(OUT)/pkgroot/Library/Extensions $(OUT)/pkgroot/Library/Filesystems $(OUT)/pkgroot/Library/LaunchDaemons
 	cp -R $(OUT)/ext2fs.kext $(OUT)/pkgroot/Library/Extensions/
 	cp -R $(OUT)/ext2fs.fs   $(OUT)/pkgroot/Library/Filesystems/
+	cp tools/$(LAUNCHD_PLIST) $(OUT)/pkgroot/Library/LaunchDaemons/
 	@# codesign and pkgbuild reject Finder-info and similar xattrs.
 	xattr -cr $(OUT)/pkgroot
 	@echo "==> Building component package"
@@ -210,7 +213,7 @@ release: kextfs
 # Install  (run as root, AFTER `make`; copies only, never compiles)
 # ---------------------------------------------------------------------------
 
-install: preinstall install-kext install-fs install-tools install-man postinstall
+install: preinstall install-kext install-fs install-tools install-launchd install-man postinstall
 
 # Tear down any previously installed/loaded build first. macOS caches third-party
 # kexts in the Auxiliary Kernel Collection, so a stale staged copy otherwise
@@ -250,6 +253,17 @@ install-tools:
 		/bin/ln -sfh "$$target" "$(SBIN_DIR)/$$t"; \
 	done
 
+# LaunchDaemon + loader script that auto-loads the kext at boot. Gated by
+# /var/db/ext2fs.enabled so a kernel fault cannot boot-loop the machine.
+install-launchd:
+	@install -d "$(LAUNCHD_DIR)"
+	@install -m 755 tools/ext2fs-load "$(SBIN_DIR)/ext2fs-load"
+	@install -m 644 tools/$(LAUNCHD_PLIST) "$(LAUNCHD_DIR)/$(LAUNCHD_PLIST)"
+	@chown root:wheel "$(LAUNCHD_DIR)/$(LAUNCHD_PLIST)"
+	@echo "    installed LaunchDaemon $(LAUNCHD_DIR)/$(LAUNCHD_PLIST)"
+	@echo "    installed loader $(SBIN_DIR)/ext2fs-load"
+	@echo "    arm with: sudo touch /var/db/ext2fs.enabled && sudo reboot"
+
 # Man pages go where the system's own do - /usr/local/share/man/man8, mirroring
 # Apple's fsck_msdos.8 in /usr/share/man/man8 - and not inside the bundle:
 # Apple's .fs bundles carry no man pages, and man(1) would not look there.
@@ -281,5 +295,5 @@ clean:
 	$(MAKE) -C tools clean
 
 .PHONY: all kextfs tools tests check distcheck debug release pkg dmg \
-        install preinstall install-kext install-fs install-tools install-man \
+        install preinstall install-kext install-fs install-tools install-launchd install-man \
         postinstall uninstall clean
