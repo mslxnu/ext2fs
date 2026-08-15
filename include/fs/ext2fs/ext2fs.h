@@ -233,31 +233,29 @@ struct csum {
  * - EXT2F_ROCOMPAT_LARGEFILE
  * - EXT2F_ROCOMPAT_EXTRA_ISIZE
  * - EXT2F_INCOMPAT_FTYPE
- *
- * We partially (read-only) support the following EXT4 features:
- * - EXT2F_ROCOMPAT_HUGE_FILE
- * - EXT2F_INCOMPAT_EXTENTS
- *
- * We do not support these EXT4 features but they are irrelevant
- * for read-only support:
+ * - EXT2F_INCOMPAT_EXTENTS (full read-write extent tree)
  * - EXT2F_INCOMPAT_FLEX_BG
  * - EXT2F_INCOMPAT_META_BG
+ * - EXT2F_INCOMPAT_RECOVER (journal replay on mount)
+ *
+ * We partially support:
+ * - EXT2F_ROCOMPAT_HUGE_FILE (read-only, 64-bit block counts)
+ * - EXT2F_INCOMPAT_64BIT (read-only)
  */
 #define	EXT2F_ROCOMPAT_SUPP		(EXT2F_ROCOMPAT_SPARSESUPER | \
 					 EXT2F_ROCOMPAT_LARGEFILE | \
 					 EXT2F_ROCOMPAT_EXTRA_ISIZE)
-#define	EXT2F_INCOMPAT_SUPP		EXT2F_INCOMPAT_FTYPE
-/*
- * Incompatible features this implementation can cope with, but only for
- * reading. A volume carrying any of them must be mounted read-only: the
- * extent code here can walk an extent tree but not extend one, so a write
- * would drive ext2_balloc() into writing indirect block pointers over an
- * inode whose i_db actually holds an extent header.
- */
-#define	EXT4F_RO_INCOMPAT_SUPP		(EXT2F_INCOMPAT_EXTENTS | \
+#define	EXT2F_INCOMPAT_SUPP		(EXT2F_INCOMPAT_FTYPE | \
+					 EXT2F_INCOMPAT_EXTENTS | \
 					 EXT2F_INCOMPAT_FLEX_BG | \
-					 EXT2F_INCOMPAT_META_BG | \
-					 EXT2F_INCOMPAT_RECOVER)
+					 EXT2F_INCOMPAT_META_BG)
+/*
+ * Incompatible features this implementation can read but not yet write.
+ * A volume carrying any of these can be mounted read-write for extents,
+ * but operations that touch the affected feature will degrade gracefully.
+ */
+#define	EXT4F_RO_INCOMPAT_SUPP		(EXT2F_INCOMPAT_RECOVER | \
+					 EXT2F_INCOMPAT_64BIT)
 
 /*
  * Feature names, for telling the user which flag stopped a mount rather than

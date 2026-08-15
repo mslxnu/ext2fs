@@ -55,6 +55,7 @@
 
 static int ext2_indirtrunc(struct inode *, daddr64_t, daddr64_t,
 	    daddr64_t, int, e4fs_daddr_t *);
+static int ext2_ext_truncate(struct inode *, off_t, int, struct ucred *);
 
 /*
  * Update the access, modified, and inode change times as specified by the
@@ -138,17 +139,14 @@ ext2_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 #endif
 
 	oip = VTOI(ovp);
-#ifdef INVARIANTS
-	bo = &ovp->v_bufobj;
-#endif
-
-	/*
-	 * FreeBSD asserted the vnode was locked here; XNU does not expose
-	 * vnode lock state.
-	 */
+	fs = oip->i_e2fs;
+	osize = oip->i_size;
 
 	if (length < 0)
 	    return (EINVAL);
+
+	if (oip->i_flag & IN_E4EXTENTS)
+		return (ext2_ext_truncate(oip, length, flags, cred));
 
 	if (vnode_vtype(ovp) == VLNK && oip->i_size < EXT2_MAXSYMLINKLEN) {
 #ifdef INVARIANTS
@@ -164,8 +162,6 @@ ext2_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 		oip->i_flag |= IN_CHANGE | IN_UPDATE;
 		return (ext2_update(ovp, 0));
 	}
-	fs = oip->i_e2fs;
-	osize = oip->i_size;
 	/*
 	 * Lengthen the size of the file. We must ensure that the
 	 * last byte of the file is allocated. Since the smallest
@@ -605,4 +601,52 @@ ext2_reclaim(struct vnop_reclaim_args *ap)
 	_FREE(ip, M_TEMP);
 
 	return (0);
+}
+
+/*
+ * Truncate an extent-mapped file to length, freeing blocks that fall beyond
+ * the new end of file by removing or shortening extent entries.
+ */
+static int
+ext2_ext_truncate(struct inode *oip, off_t length, int flags, struct ucred *cred)
+{
+	struct m_ext2fs *fs = oip->i_e2fs;
+	struct vnode *vp = ITOV(oip);
+	struct ext4_extent_path path = { .ep_bp = NULL };
+	daddr64_t lbn;
+	uint32_t len;
+	int error;
+
+	if ((uint64_t)length >= oip->i_size) {
+		if ((uint64_t)length > oip->i_size) {
+			oip->i_size = (uint64_t)length;
+			oip->i_flag |= IN_CHANGE | IN_UPDATE;
+			ubc_setsize(vp, length);
+		}
+		return (ext2_update(vp, 0));
+	}
+
+	lbn = lblkno(fs, length);
+	len = (uint32_t)((blkoff(fs, length) + fs->e2fs_bsize - 1) >> fs->e2fs_bshift);
+	if (len == 0)
+		len = 1;
+
+	ext4_ext_find_extent(fs, oip, lbn, &path);
+	if (path.ep_ext == NULL) {
+		ext4_ext_drop_refs(&path);
+		return (0);
+	}
+
+	error = ext4_ext_rm_extent(oip, &path, lbn, len);
+	ext4_ext_drop_refs(&path);
+	if (error)
+		return (error);
+
+	oip->i_size = (uint64_t)length;
+	oip->i_flag |= IN_CHANGE | IN_UPDATE;
+
+	error = buf_invalidateblks(vp, BUF_WRITE_DATA, 0, 0);
+	ubc_setsize(vp, length);
+
+	return (error);
 }

@@ -103,6 +103,13 @@ int	ext2_checkpath(struct inode *, struct inode *, struct ucred *,
 int	cg_has_sb(int i);
 int	ext2_inactive(struct vnop_inactive_args *);
 
+/* Extent tree operations. */
+void	ext4_ext_drop_refs(struct ext4_extent_path *path);
+int	ext4_ext_insert_extent(struct inode *, struct ext4_extent_path *,
+	    struct ext4_extent *);
+int	ext4_ext_rm_extent(struct inode *, struct ext4_extent_path *,
+	    daddr64_t, uint32_t);
+
 /* Flags to low-level allocation routines.
  * The low 16-bits are reserved for IO_ flags from vnode.h.
  */

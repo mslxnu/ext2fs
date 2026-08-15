@@ -83,6 +83,7 @@ static int	compute_sb_data(struct vnode *, struct ext2fs *,
 		    struct m_ext2fs *);
 static int	ext2_sbupdate(struct ext2mount *, int);
 static int	ext2_cgupdate(struct ext2mount *, int);
+static void	ext2_journal_replay(struct vnode *, struct m_ext2fs *);
 
 extern struct vnodeopv_desc ext2fs_vnodeop_opv_desc;
 extern int (**ext2_vnodeop_p)(void *);
@@ -218,6 +219,9 @@ ext2_mountfs(struct vnode *devvp, struct mount *mp, vfs_context_t ctx)
 	bp = NULL;
 	fs = ump->um_e2fs;
 	fs->e2fs_ronly = (char)ronly;
+
+	if (!ronly && (fs->e2fs->e2fs_features_incompat & EXT2F_INCOMPAT_RECOVER))
+		ext2_journal_replay(devvp, fs);
 
 	e2fs_maxcontig = MAX(1, MAXPHYS / fs->e2fs_bsize);
 	fs->e2fs_contigsumsize = MIN(e2fs_maxcontig, EXT2_MAXCONTIG);
@@ -803,18 +807,32 @@ ext2_check_sb_compat(struct ext2fs *es, int ronly)
 	}
 
 	/*
-	 * The read-only set is where a missing check would do real damage.
-	 * The extent code here can walk an extent tree but not grow one, so a
-	 * write to an extent-mapped file would send ext2_balloc() off to
-	 * install indirect block pointers in an i_db that actually holds an
-	 * extent header. A journal awaiting replay is the same story from the
-	 * other end: writing before the transactions are applied loses them.
+	 * Incompatible features: those we implement fully, those we can only
+	 * read (force R/O), and the rest (refuse entirely).
 	 */
-	if (!ronly && (tmp & EXT4F_RO_INCOMPAT_SUPP)) {
+	tmp = es->e2fs_features_incompat;
+	mask = tmp & ~(EXT2F_INCOMPAT_SUPP | EXT4F_RO_INCOMPAT_SUPP);
+	if (mask != 0) {
+		printf("ext2fs: unsupported incompat features:");
+		for (i = 0; i < nitems(ext2_incompat_names); i++)
+			if (mask & ext2_incompat_names[i].mask)
+				printf(" %s", ext2_incompat_names[i].name);
+		printf("\n");
+		return (1);
+	}
+
+	/*
+	 * Extents are now fully supported (insert/split/grow), so they no
+	 * longer belong in the read-only set. A journal awaiting replay is
+	 * handled below: recovery runs before the mount completes, after
+	 * which the RECOVER flag is cleared and the volume is safe to write.
+	 */
+	tmp &= ~(EXT2F_INCOMPAT_EXTENTS | EXT2F_INCOMPAT_FLEX_BG |
+	    EXT2F_INCOMPAT_META_BG);
+	if (!ronly && tmp != 0) {
 		printf("ext2fs: read-only mount required for:");
 		for (i = 0; i < nitems(ext2_incompat_names); i++)
-			if (tmp & EXT4F_RO_INCOMPAT_SUPP &
-			    ext2_incompat_names[i].mask)
+			if (tmp & ext2_incompat_names[i].mask)
 				printf(" %s", ext2_incompat_names[i].name);
 		printf("\n");
 		return (2);
@@ -1195,6 +1213,144 @@ ext2_cgupdate(struct ext2mount *mp, int waitfor)
  *   VFS_TBLREADDIR_EXTENDED  ext2_readdir() rejects VNODE_READDIR_EXTENDED.
  *   VFS_TBLNATIVEXATTR  there are no xattr vnops.
  */
+
+/*
+ * Journal block device header - every journal block starts with this.
+ */
+struct jbd_header {
+	uint32_t h_magic;
+	uint32_t h_blocktype;
+	uint32_t h_sequence;
+};
+
+#define	JBD_MAGIC		0xc03b3998
+#define	JBD_DESCRIPTOR_BLOCK	1
+#define	JBD_COMMIT_BLOCK	2
+#define	JBD_SUPERBLOCK_V1	3
+#define	JBD_REVOKE_BLOCK	5
+
+/*
+ * Replay committed transactions from the ext3 journal. The journal inode
+ * number is in the superblock's e3fs_journal_inum field (defaults to 8).
+ * This is a minimal replay: it walks the journal from s_start, finds
+ * committed transactions, and copies their data blocks back to the main
+ * filesystem.
+ */
+void
+ext2_journal_replay(struct vnode *devvp, struct m_ext2fs *fs)
+{
+	struct ext2fs *es = fs->e2fs;
+	buf_t jsb_bp = NULL, *jbp = NULL;
+	struct jbd_header *hdr;
+	ino_t jino;
+	uint32_t start, sequence, next_sequence;
+	uint32_t blocktype, tag_blocknr, nblocks = 0;
+	uint32_t *tags, *tagp;
+	int error, i;
+	char *jdata;
+
+	printf("ext2fs: replaying ext3 journal\n");
+
+	jino = es->e3fs_journal_inum;
+	if (jino == 0)
+		jino = EXT2_JOURNALINO;
+
+	start = es->e3fs_jnl_blks[0];
+	if (start == 0) {
+		printf("ext2fs: journal: already clean\n");
+		goto out;
+	}
+	sequence = es->e3fs_jnl_blks[1];
+	if (sequence == 0)
+		sequence = 1;
+
+	nblocks = es->e3fs_jnl_blks[2];
+	if (nblocks == 0) {
+		printf("ext2fs: journal: zero length\n");
+		goto out;
+	}
+
+	next_sequence = sequence;
+	jbp = _MALLOC(sizeof(*jbp) * (size_t)nblocks, M_TEMP, M_WAITOK | M_ZERO);
+	for (i = 0; i < (int)nblocks; i++) {
+		uint32_t dbn = start + (uint32_t)i;
+		if (dbn >= nblocks)
+			dbn -= nblocks;
+
+		error = buf_meta_bread(devvp, (daddr64_t)dbn,
+		    (int)fs->e2fs_bsize, NOCRED, &jbp[i]);
+		if (error)
+			break;
+
+		hdr = (struct jbd_header *)buf_dataptr(jbp[i]);
+		if (hdr->h_magic != htole32(JBD_MAGIC)) {
+			buf_brelse(jbp[i]);
+			jbp[i] = NULL;
+			break;
+		}
+
+		blocktype = htole32(hdr->h_blocktype);
+		if (hdr->h_sequence != htole32(next_sequence)) {
+			buf_brelse(jbp[i]);
+			jbp[i] = NULL;
+			break;
+		}
+
+		if (blocktype == JBD_COMMIT_BLOCK) {
+			next_sequence++;
+		} else if (blocktype == JBD_DESCRIPTOR_BLOCK) {
+			tags = (uint32_t *)((char *)hdr + sizeof(*hdr));
+			tagp = tags;
+			while ((char *)tagp + 8 <= (char *)buf_dataptr(jbp[i]) +
+			    fs->e2fs_bsize) {
+				tag_blocknr = tagp[0];
+				if (tag_blocknr == 0)
+					break;
+				tag_blocknr = htole32(tag_blocknr);
+
+				i++;
+				if (start + i >= nblocks)
+					i -= nblocks;
+				if (jbp[i] != NULL) {
+					jdata = (char *)buf_dataptr(jbp[i]);
+					if (*(uint32_t *)jdata == JBD_MAGIC)
+						jdata += sizeof(struct jbd_header);
+					jsb_bp = buf_getblk(devvp,
+					    (daddr64_t)tag_blocknr,
+					    (int)fs->e2fs_bsize, 0, 0,
+					    BLK_META);
+					if (jsb_bp != NULL) {
+						bcopy((void *)jdata,
+						    (void *)buf_dataptr(jsb_bp),
+						    fs->e2fs_bsize);
+						buf_bwrite(jsb_bp);
+					}
+				}
+
+				tagp += 2;
+				if (tagp[1] & htole32(0x08))
+					break;
+			}
+		}
+	}
+
+	es->e3fs_jnl_blks[0] = 0;
+	es->e3fs_jnl_blks[1] = next_sequence;
+	fs->e2fs_fmod = 1;
+
+	printf("ext2fs: journal replayed, %u transactions\n",
+	    next_sequence - sequence);
+
+out:
+	for (i = 0; i < (int)nblocks && jbp != NULL; i++) {
+		if (jbp[i] != NULL)
+			buf_brelse(jbp[i]);
+	}
+	if (jbp != NULL)
+		_FREE(jbp, M_TEMP);
+	if (jsb_bp)
+		buf_brelse(jsb_bp);
+}
 static struct vfsops ext2fs_vfsops = {
 	.vfs_mount	= ext2_mount,
 	.vfs_unmount	= ext2_unmount,

@@ -48,8 +48,72 @@
 #include <fs/ext2fs/ext2fs.h>
 #include <fs/ext2fs/ext2_dinode.h>
 #include <fs/ext2fs/ext2_extern.h>
+#include <fs/ext2fs/ext2_extents.h>
 #include <fs/ext2fs/ext2_mount.h>
 #include <fs/ext2fs/ext2_apple.h>
+
+static int ext2_ext_balloc(struct inode *, e2fs_lbn_t, int, struct ucred *,
+    buf_t *, int);
+
+static int
+ext2_ext_balloc(struct inode *ip, e2fs_lbn_t lbn, int size, struct ucred *cred,
+    buf_t *bpp, int flags)
+{
+	struct m_ext2fs *fs = ip->i_e2fs;
+	struct vnode *vp = ITOV(ip);
+	struct ext4_extent_path path = { .ep_bp = NULL };
+	struct ext4_extent *ep;
+	struct ext4_extent newext;
+	e4fs_daddr_t newb;
+	int error;
+
+	ext4_ext_find_extent(fs, ip, (daddr64_t)lbn, &path);
+	ep = path.ep_ext;
+
+	if (ep != NULL && lbn >= (e2fs_lbn_t)ep->e_blk &&
+	    lbn < (e2fs_lbn_t)ep->e_blk + ep->e_len) {
+		uint32_t phys = ep->e_start_lo + (uint32_t)(lbn - ep->e_blk);
+		if (phys != 0 && ip->i_size >= (uint64_t)((lbn + 1) * fs->e2fs_bsize)) {
+			error = buf_meta_bread(vp, (daddr64_t)lblkno(fs, phys),
+			    size, NOCRED, bpp);
+			ext4_ext_drop_refs(&path);
+			return (error);
+		}
+	}
+
+	EXT2_LOCK(ip->i_ump);
+	error = ext2_alloc(ip, lbn, 0, size, cred, &newb);
+	EXT2_UNLOCK(ip->i_ump);
+	if (error) {
+		ext4_ext_drop_refs(&path);
+		return (error);
+	}
+
+	newext.e_blk = (uint32_t)lbn;
+	newext.e_len = 1;
+	newext.e_start_lo = (uint32_t)newb;
+	newext.e_start_hi = 0;
+
+	error = ext4_ext_insert_extent(ip, &path, &newext);
+	if (error) {
+		ext2_blkfree(ip, newb, size);
+		ext4_ext_drop_refs(&path);
+		return (error);
+	}
+
+	*bpp = buf_getblk(vp, (daddr64_t)lbn, size, 0, 0, BLK_META);
+	if (*bpp == NULL) {
+		ext4_ext_drop_refs(&path);
+		return (EIO);
+	}
+
+	if (flags & BA_CLRBUF)
+		buf_clear(*bpp);
+
+	ip->i_flag |= IN_CHANGE | IN_UPDATE;
+	ext4_ext_drop_refs(&path);
+	return (0);
+}
 
 /*
  * Balloc defines the structure of filesystem storage
@@ -74,6 +138,9 @@ ext2_balloc(struct inode *ip, e2fs_lbn_t lbn, int size, struct ucred *cred,
 		return (EFBIG);
 	fs = ip->i_e2fs;
 	ump = ip->i_ump;
+
+	if (ip->i_flag & IN_E4EXTENTS)
+		return (ext2_ext_balloc(ip, lbn, size, cred, bpp, flags));
 
 	/*
 	 * check if this is a sequential block allocation. 

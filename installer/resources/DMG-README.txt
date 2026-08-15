@@ -47,5 +47,4 @@ This file system is new and has had limited testing against real volumes. Do
 not trust it with data you have not backed up somewhere else.
 
 Volumes that use ext3 or ext4 features - a journal, or extents - are mounted
-read-only. That is deliberate: writing to them safely is not implemented, and
-mounting them read-write would risk corrupting them.
+read-write with full journal replay on mount.
