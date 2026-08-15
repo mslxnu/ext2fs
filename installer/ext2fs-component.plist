@@ -2,14 +2,16 @@
 <!--
   pkgbuild component settings for the ext2fs payload.
 
-  All payloads are bundles or plists - ext2fs.kext, ext2fs.fs, and the
-  com.beako.ext2fs LaunchDaemon - and pkgbuild marks bundles relocatable by
-  default. A relocatable payload is redirected to wherever the installer finds
-  an existing bundle with the same identifier, which for anyone who has ever
-  built this tree means the copy sitting in out/. The install would then appear
-  to succeed while /Library/Extensions, /Library/Filesystems, and
-  /Library/LaunchDaemons stayed empty. All three are forced non-relocatable so
+  Both payloads are bundles - ext2fs.kext and ext2fs.fs - and pkgbuild marks
+  bundles relocatable by default. A relocatable payload is redirected to
+  wherever the installer finds an existing bundle with the same identifier,
+  which for anyone who has ever built this tree means the copy sitting in
+  out/. The install would then appear to succeed while /Library/Extensions
+  and /Library/Filesystems stayed empty. Both are forced non-relocatable so
   they land where the package says.
+
+  The LaunchDaemon plist is a flat file, not a bundle, so it is excluded from
+  the component list and simply carried in the pkgroot payload instead.
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -25,12 +27,6 @@
 		<key>BundleIsVersionChecked</key><true/>
 		<key>BundleOverwriteAction</key><string>upgrade</string>
 		<key>RootRelativeBundlePath</key><string>Library/Filesystems/ext2fs.fs</string>
-	</dict>
-	<dict>
-		<key>BundleIsRelocatable</key><false/>
-		<key>BundleIsVersionChecked</key><true/>
-		<key>BundleOverwriteAction</key><string>upgrade</string>
-		<key>RootRelativeBundlePath</key><string>Library/LaunchDaemons/com.beako.ext2fs.plist</string>
 	</dict>
 </array>
 </plist>
