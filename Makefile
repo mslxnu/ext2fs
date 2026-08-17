@@ -285,9 +285,10 @@ uninstall:
 # Clean  (never needs sudo: the build never produces root-owned files)
 # ---------------------------------------------------------------------------
 
-# vendor/ is not recursed into: libutil and diskdev_cmds are Apple Xcode
-# projects with no GNU makefile, and nothing links them any more. The tree uses
-# vendor/libutil only as an include path, for mntopts.h.
+# vendor/ is not recursed into: libutil is an Apple Xcode project with no GNU
+# makefile, and nothing links it. The tree uses it only as an include path, for
+# mntopts.h, which the macOS SDK does not ship even though libutil.tbd exports
+# getmntopts() itself.
 clean:
 	rm -rf $(OUT)
 	$(MAKE) -C kext clean

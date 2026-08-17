@@ -1,12 +1,6 @@
-[submodule "vendor/diskdev_cmds"]
-	path = vendor/diskdev_cmds
-	url = https://github.com/apple-oss-distributions/diskdev_cmds.git
 [submodule "vendor/libutil"]
 	path = vendor/libutil
 	url = https://github.com/apple-oss-distributions/libutil.git
 [submodule "lib/libkext"]
 	path = lib/libkext
 	url = https://github.com/somestupidgirl/libkext.git
-[submodule "vendor/CoreOSMakefiles"]
-	path = vendor/CoreOSMakefiles
-	url = https://github.com/apple-oss-distributions/CoreOSMakefiles.git

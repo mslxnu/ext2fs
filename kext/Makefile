@@ -135,9 +135,9 @@ LDFLAGS+= -target $(TARGET_TRIPLE) \
           $(foreach o,$(OBJS),-Xlinker -object_path_lto -Xlinker $(o)) \
           -Xlinker -export_dynamic
 
-# vendor/libutil and vendor/diskdev_cmds/disklib are userland libraries built
-# against libSystem; they belong to the tools, not to the kext, and linking them
-# here would drag in unresolved userland symbols.
+# vendor/libutil is a userland library built against libSystem; it belongs to
+# the tools, not to the kext, and linking it here would drag in unresolved
+# userland symbols.
 LIBS+= -L$(KERNEL_LIBDIR) \
        -L../lib/libkext
 

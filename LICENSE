@@ -67,20 +67,16 @@ terms above must not be read as applying to them:
 
     tools/e2undel       GNU GPL.  Includes file(1) code by Ian F. Darwin.
     tools/extfsmgr      Apple Public Source License, from ext2fsx.
-    vendor/libutil      Apple Public Source License.
-    vendor/diskdev_cmds Apple Public Source License.
-                        See vendor/diskdev_cmds/APPLE_LICENSE.
-    vendor/CoreOSMakefiles
-                        Apple Public Source License.
-                        See vendor/CoreOSMakefiles/APPLE_LICENSE.
+    vendor/libutil      Apple Public Source License.  Supplies one header,
+                        mntopts.h, to mount_ext2fs; no code from it is
+                        compiled or linked.
     lib/libkext         BSD 2-Clause, Copyright (c) 2018 lynnl.  Unlike the
                         rest of this list it IS built and linked into the
                         kernel extension.  See lib/libkext/LICENSE.
 
 With the exception of lib/libkext, none of those is built, linked against or
 shipped by any target in this repository's Makefiles: the tools/ entries are
-kept for reference and SUBDIRS in tools/Makefile is empty, and vendor/libutil
-supplies only a header (mntopts.h) to the userland tools.  No part of the
+kept for reference and SUBDIRS in tools/Makefile is empty.  No part of the
 kernel extension, the bundle or the installer is derived from them.
 
 In particular, newfs_ext2fs is not derived from e2fsprogs despite its
