@@ -58,7 +58,7 @@
  */
 
 #define fsck_ino_to_fsba(fs, x) \
-	(letoh32((fs)->e2fs_gd[ino_to_cg(fs, x)].ext2bgd_i_tables) + \
+	(letoh32(EXT2_GD((fs), ino_to_cg(fs, x))->ext2bgd_i_tables) + \
 	(((x)-1) % (fs)->e2fs->e2fs_ipg)/(fs)->e2fs_ipb)
 
 static ino_t startinum;

@@ -209,8 +209,8 @@ flush(int fd, struct bufarea *bp)
 	if (bp != &sblk)
 		return;
 	for (i = 0; i < sblock.e2fs_gdbcount; i++) {
-		bwrite(fswritefd, (char *)
-			&sblock.e2fs_gd[i* sblock.e2fs_bsize / sizeof(struct ext2_gd)],
+		bwrite(fswritefd,
+			(char *)sblock.e2fs_gd + (size_t)i * sblock.e2fs_bsize,
 		    fsbtodb(&sblock, ((sblock.e2fs_bsize>1024)?0:1)+i+1),
 		    sblock.e2fs_bsize);
 	}

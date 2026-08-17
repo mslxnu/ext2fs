@@ -67,18 +67,18 @@ pass1(void)
 		dbase = c * sblock.e2fs->e2fs_bpg +
 		    sblock.e2fs->e2fs_first_dblock;
 		/* Mark the blocks used for the inode table */
-		if (letoh32(sblock.e2fs_gd[c].ext2bgd_i_tables) >= dbase) {
+		if (letoh32(EXT2_GD(&sblock, c)->ext2bgd_i_tables) >= dbase) {
 			for (i = 0; i < sblock.e2fs_itpg; i++)
 				setbmap(
-				    letoh32(sblock.e2fs_gd[c].ext2bgd_i_tables)
+				    letoh32(EXT2_GD(&sblock, c)->ext2bgd_i_tables)
 				    + i);
 		}
 		/* Mark the blocks used for the block bitmap */
-		if (letoh32(sblock.e2fs_gd[c].ext2bgd_b_bitmap) >= dbase)
-			setbmap(letoh32(sblock.e2fs_gd[c].ext2bgd_b_bitmap));
+		if (letoh32(EXT2_GD(&sblock, c)->ext2bgd_b_bitmap) >= dbase)
+			setbmap(letoh32(EXT2_GD(&sblock, c)->ext2bgd_b_bitmap));
 		/* Mark the blocks used for the inode bitmap */
-		if (letoh32(sblock.e2fs_gd[c].ext2bgd_i_bitmap) >= dbase)
-			setbmap(letoh32(sblock.e2fs_gd[c].ext2bgd_i_bitmap));
+		if (letoh32(EXT2_GD(&sblock, c)->ext2bgd_i_bitmap) >= dbase)
+			setbmap(letoh32(EXT2_GD(&sblock, c)->ext2bgd_i_bitmap));
 
 		if (sblock.e2fs->e2fs_rev == E2FS_REV0 ||
 		    (sblock.e2fs->e2fs_features_rocompat &

@@ -208,8 +208,8 @@ setup(char *dev)
 		errexit("out of memory\n");
 	asked = 0;
 	for (i=0; i < sblock.e2fs_gdbcount; i++) {
-		if (bread(fsreadfd,(char *)
-			&sblock.e2fs_gd[i* sblock.e2fs_bsize / sizeof(struct ext2_gd)],
+		if (bread(fsreadfd,
+			(char *)sblock.e2fs_gd + (size_t)i * sblock.e2fs_bsize,
 			fsbtodb(&sblock, ((sblock.e2fs_bsize>1024)?0:1)+i+1),
 			sblock.e2fs_bsize) != 0 && !asked) {
 			pfatal("BAD SUMMARY INFORMATION");
@@ -247,7 +247,7 @@ setup(char *dev)
 		goto badsblabel;
 	}
 	for (numdirs = 0, cg = 0; cg < sblock.e2fs_gcount; cg++) {
-		numdirs += letoh16(sblock.e2fs_gd[cg].ext2bgd_ndirs);
+		numdirs += letoh16(EXT2_GD(&sblock, cg)->ext2bgd_ndirs);
 	}
 	inplast = 0;
 	listmax = numdirs + 10;
@@ -310,8 +310,29 @@ readsb(int listerr)
 	 * shared m_ext2fs has no such member and nothing reads it -
 	 * <fs/ext2fs/fs.h> builds blkoff() out of e2fs_qbmask alone.
 	 */
+	/*
+	 * Group descriptors are EXT2_MIN_GD_SIZE bytes unless the volume has
+	 * the 64bit feature, where the superblock gives their real size - 64,
+	 * for anything mke2fs writes with metadata_csum. Deriving the stride
+	 * from sizeof(struct ext2_gd) instead walked the table at half its
+	 * true pitch, so every group after the first was read from the middle
+	 * of its predecessor. This mirrors compute_sb_data() in the kext.
+	 */
+	sblock.e2fs_gdsize = EXT2_MIN_GD_SIZE;
+	if (sblock.e2fs->e2fs_rev > E2FS_REV0 &&
+	    (sblock.e2fs->e2fs_features_incompat & EXT2F_INCOMPAT_64BIT) &&
+	    sblock.e2fs->e3fs_desc_size != 0)
+		sblock.e2fs_gdsize = sblock.e2fs->e3fs_desc_size;
+	if (sblock.e2fs_gdsize < EXT2_MIN_GD_SIZE ||
+	    (sblock.e2fs_gdsize & (sblock.e2fs_gdsize - 1)) != 0 ||
+	    sblock.e2fs_gdsize > sblock.e2fs_bsize) {
+		pfatal("NONSENSICAL GROUP DESCRIPTOR SIZE=%u IN SUPERBLOCK",
+		    sblock.e2fs_gdsize);
+		return (0);
+	}
+
 	sblock.e2fs_gdbcount = howmany(sblock.e2fs_gcount,
-		sblock.e2fs_bsize / sizeof(struct ext2_gd));
+		sblock.e2fs_bsize / sblock.e2fs_gdsize);
 	sblock.e2fs_ipb = sblock.e2fs_bsize / EXT2_DINODE_SIZE(&sblock);
 	sblock.e2fs_itpg = sblock.e2fs->e2fs_ipg/sblock.e2fs_ipb;
 	/*
@@ -504,8 +525,10 @@ calcsb(char *dev, int devfd, struct m_ext2fs *fs)
 		howmany(fs->e2fs->e2fs_bcount - fs->e2fs->e2fs_first_dblock,
 		fs->e2fs->e2fs_bpg);
 	fs->e2fs_fsbtodb = fs->e2fs->e2fs_log_bsize + 1;
+	/* Fabricated from device geometry: no superblock to read a size from. */
+	fs->e2fs_gdsize = EXT2_MIN_GD_SIZE;
 	fs->e2fs_gdbcount = howmany(fs->e2fs_gcount,
-		fs->e2fs_bsize / sizeof(struct ext2_gd));
+		fs->e2fs_bsize / fs->e2fs_gdsize);
 
 	return (1);
 }
