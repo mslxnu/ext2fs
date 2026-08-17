@@ -1081,6 +1081,7 @@ ext2_mkdir(struct vnop_mkdir_args *ap)
 	struct inode *ip, *dp;
 	struct vnode *tvp;
 	struct ext2fs_dirtemplate dirtemplate, *dtp;
+	buf_t bp;
 	int error, dmode;
 
 #ifdef INVARIANTS
@@ -1158,21 +1159,44 @@ ext2_mkdir(struct vnop_mkdir_args *ap)
 #undef  DIRBLKSIZ 
 #define DIRBLKSIZ  VTOI(dvp)->i_e2fs->e2fs_bsize
 	dirtemplate.dotdot_reclen = DIRBLKSIZ - 12;
-	error = vn_rdwr(UIO_WRITE, tvp, (caddr_t)&dirtemplate,
-	    sizeof(dirtemplate), (off_t)0, UIO_SYSSPACE,
-	    IO_NODELOCKED | IO_SYNC, vfs_context_ucred(ap->a_context),
-	    NULL, NULL);
+
+	/*
+	 * Write the template into the new directory's first block.
+	 *
+	 * FreeBSD used vn_rdwr(), which lands in VNOP_WRITE. That does not work
+	 * here. On XNU a regular file's data goes through the UBC - ext2_write()
+	 * hands it to cluster_write() - while a directory's data goes through
+	 * the buffer cache as metadata, which is where ext2_blkatoff() reads it
+	 * back from with buf_meta_bread(). Pushing a directory block through the
+	 * UBC would be writing it to the wrong place by the wrong path, and
+	 * ext2_write() refuses a directory outright besides.
+	 *
+	 * So allocate the block and fill the buffer directly, as OpenBSD's
+	 * ext2fs_mkdir() does. i_size has to be set before ext2_balloc(), which
+	 * consults it to decide how much of the block is valid.
+	 */
+	if ((uint32_t)DIRBLKSIZ > (uint32_t)vfs_statfs(vnode_mount(dvp))->f_bsize)
+		/* XXX should grow with balloc() */
+		panic("ext2_mkdir: blksize");
+	ip->i_size = DIRBLKSIZ;
+	ip->i_flag |= IN_CHANGE | IN_UPDATE;
+	error = ext2_balloc(ip, (e2fs_lbn_t)0, (int)DIRBLKSIZ,
+	    vfs_context_ucred(ap->a_context), &bp, BA_CLRBUF);
 	if (error) {
 		dp->i_nlink--;
 		dp->i_flag |= IN_CHANGE;
 		goto bad;
 	}
-	if ((uint32_t)DIRBLKSIZ > (uint32_t)vfs_statfs(vnode_mount(dvp))->f_bsize)
-		/* XXX should grow with balloc() */
-		panic("ext2_mkdir: blksize");
-	else {
-		ip->i_size = DIRBLKSIZ;
-		ip->i_flag |= IN_CHANGE;
+	/*
+	 * BA_CLRBUF zeroed the block, so the bytes past the template are
+	 * already the free space that dotdot_reclen accounts for.
+	 */
+	bcopy(&dirtemplate, (caddr_t)buf_dataptr(bp), sizeof(dirtemplate));
+	error = buf_bwrite(bp);
+	if (error) {
+		dp->i_nlink--;
+		dp->i_flag |= IN_CHANGE;
+		goto bad;
 	}
 
 	/* Directory set up, now install its entry in the parent directory. */

@@ -83,6 +83,116 @@
 /*
  * Vnode op for reading.
  */
+
+/*
+ * Read and write for vnodes that are not regular files.
+ *
+ * A regular file's data lives in the UBC and goes through cluster_read() and
+ * cluster_write(). A directory's does not: its blocks are metadata, read back
+ * by ext2_blkatoff() with buf_meta_bread(), and a symlink longer than the
+ * inode is the same. FreeBSD did not have to distinguish, because its
+ * ext2_read() and ext2_write() went through the buffer cache for every vnode
+ * type; on XNU the two paths are separate and picking the wrong one writes the
+ * data somewhere the reader will never look for it.
+ *
+ * The imported code reaches both through vn_rdwr(), which lands in VNOP_READ
+ * and VNOP_WRITE: ext2_direnter() adding an entry to a directory,
+ * ext2_dirempty() and ext2_checkpath() walking one, ext2_rename() repointing
+ * "..", and ext2_symlink()/ext2_readlink() on the link target. Rather than
+ * rewrite all seven call sites, ext2_read() and ext2_write() serve those vnode
+ * types from the buffer cache here.
+ */
+static int
+ext2_meta_read(struct vnode *vp, struct uio *uio)
+{
+	struct inode *ip = VTOI(vp);
+	struct m_ext2fs *fs = ip->i_e2fs;
+	buf_t bp;
+	off_t bytes;
+	int error = 0;
+
+	while (uio_resid(uio) > 0) {
+		off_t off = uio_offset(uio);
+		int blkoffset;
+
+		if ((uint64_t)off >= ip->i_size)
+			break;
+		if ((error = ext2_blkatoff(vp, off, NULL, &bp)) != 0)
+			break;
+		blkoffset = blkoff(fs, off);
+		bytes = (off_t)buf_count(bp) - blkoffset;
+		if (bytes > uio_resid(uio))
+			bytes = uio_resid(uio);
+		if ((uint64_t)(off + bytes) > ip->i_size)
+			bytes = (off_t)(ip->i_size - (uint64_t)off);
+		if (bytes <= 0) {
+			buf_brelse(bp);
+			break;
+		}
+		error = uiomove((caddr_t)buf_dataptr(bp) + blkoffset,
+		    (int)bytes, uio);
+		buf_brelse(bp);
+		if (error != 0)
+			break;
+	}
+
+	return (error);
+}
+
+static int
+ext2_meta_write(struct vnode *vp, struct uio *uio, int ioflag)
+{
+	struct inode *ip = VTOI(vp);
+	struct m_ext2fs *fs = ip->i_e2fs;
+	struct ucred *cred = NOCRED;
+	buf_t bp;
+	off_t bytes;
+	int error = 0;
+
+	while (uio_resid(uio) > 0) {
+		off_t off = uio_offset(uio);
+		e2fs_lbn_t lbn = lblkno(fs, off);
+		int blkoffset = blkoff(fs, off);
+		int xfersize = (int)fs->e2fs_bsize - blkoffset;
+
+		if ((off_t)xfersize > uio_resid(uio))
+			xfersize = (int)uio_resid(uio);
+
+		/*
+		 * BA_CLRBUF whenever the write does not cover the whole block:
+		 * the rest of a freshly allocated block would otherwise be
+		 * whatever the disk last held there.
+		 */
+		error = ext2_balloc(ip, lbn, (int)fs->e2fs_bsize, cred, &bp,
+		    (xfersize == (int)fs->e2fs_bsize && blkoffset == 0) ?
+		    0 : BA_CLRBUF);
+		if (error != 0)
+			break;
+
+		error = uiomove((caddr_t)buf_dataptr(bp) + blkoffset,
+		    xfersize, uio);
+		if (error != 0) {
+			buf_brelse(bp);
+			break;
+		}
+
+		bytes = off + xfersize;
+		if ((uint64_t)bytes > ip->i_size)
+			ip->i_size = (uint64_t)bytes;
+
+		if (ioflag & IO_SYNC)
+			error = buf_bwrite(bp);
+		else
+			buf_bdwrite(bp);
+		if (error != 0)
+			break;
+	}
+
+	ip->i_flag |= IN_CHANGE | IN_UPDATE;
+
+	return (error);
+}
+
 int
 ext2_read(struct vnop_read_args *ap)
 {
@@ -91,12 +201,17 @@ ext2_read(struct vnop_read_args *ap)
 	struct uio *uio = ap->a_uio;
 	int error;
 
-	if (vnode_isdir(vp))
+	/*
+	 * read(2) on a directory is the caller's error; a kernel caller reading
+	 * one through vn_rdwr() is not, and uio_isuserspace() is what separates
+	 * them.
+	 */
+	if (vnode_isdir(vp) && uio_isuserspace(uio))
 		return (EISDIR);
-	if (!vnode_isreg(vp))
-		return (EPERM);
 	if (uio_offset(uio) < 0)
 		return (EINVAL);
+	if (!vnode_isreg(vp))
+		return (ext2_meta_read(vp, uio));
 	if (uio_resid(uio) == 0)
 		return (0);
 
@@ -176,10 +291,13 @@ ext2_write(struct vnop_write_args *ap)
 	int ioflag = ap->a_ioflag;
 	int error;
 
-	if (vnode_isdir(vp))
+	if (vnode_isdir(vp) && uio_isuserspace(uio))
 		return (EISDIR);
-	if (!vnode_isreg(vp))
-		return (EPERM);
+	if (!vnode_isreg(vp)) {
+		if (uio_offset(uio) < 0)
+			return (EINVAL);
+		return (ext2_meta_write(vp, uio, ioflag));
+	}
 
 	if (ioflag & IO_APPEND)
 		uio_setoffset(uio, (off_t)ip->i_size);

@@ -993,6 +993,28 @@ compute_sb_data(struct vnode *devvp, struct ext2fs *es,
 int
 ext2_vget(struct mount *mp, ino64_t ino, struct vnode **vpp, vfs_context_t ctx)
 {
+
+	return (ext2_vget_typed(mp, ino, 0, vpp, ctx));
+}
+
+/*
+ * The body of ext2_vget(), plus a way to say what the inode is about to
+ * become.
+ *
+ * XNU fixes a vnode's type at vnode_create() time and offers no way to change
+ * it afterwards, so IFTOVT(ip->i_mode) has to be right before the vnode
+ * exists. That is fine for an inode being read off disk, but ext2_valloc()
+ * calls this for one it has just allocated, whose on-disk mode is zero or
+ * stale from whatever last used the slot. IFTOVT(0) is VNON, so the new
+ * directory or file came back as a vnode of no type at all, and the first
+ * write to it fell through ext2_write()'s "not a directory, not a regular
+ * file" arm and returned EPERM. Passing the intended mode in vmode fixes the
+ * type at the only moment it can be set.
+ */
+int
+ext2_vget_typed(struct mount *mp, ino64_t ino, mode_t vmode,
+    struct vnode **vpp, vfs_context_t ctx)
+{
 	struct m_ext2fs *fs;
 	struct inode *ip;
 	struct ext2mount *ump;
@@ -1100,16 +1122,16 @@ ext2_vget(struct mount *mp, ino64_t ino, struct vnode **vpp, vfs_context_t ctx)
 	 */
 	bzero(&vfsp, sizeof(vfsp));
 	vfsp.vnfs_mp = mp;
-	vfsp.vnfs_vtype = IFTOVT(ip->i_mode);
+	vfsp.vnfs_vtype = IFTOVT(vmode != 0 ? vmode : ip->i_mode);
 	vfsp.vnfs_str = "ext2fs";
 	vfsp.vnfs_dvp = NULL;
 	vfsp.vnfs_fsnode = ip;
 	vfsp.vnfs_vops = ext2_vnodeop_p;
 	vfsp.vnfs_markroot = (ino == EXT2_ROOTINO);
 	vfsp.vnfs_marksystem = 0;
-	vfsp.vnfs_rdev = (vfsp.vnfs_vtype == VBLK ||
-	    vfsp.vnfs_vtype == VCHR) ? (dev_t)ip->i_rdev : 0;
-	vfsp.vnfs_filesize = ip->i_size;
+	vfsp.vnfs_rdev = (vmode == 0 && (vfsp.vnfs_vtype == VBLK ||
+	    vfsp.vnfs_vtype == VCHR)) ? (dev_t)ip->i_rdev : 0;
+	vfsp.vnfs_filesize = (vmode != 0) ? 0 : ip->i_size;
 	vfsp.vnfs_cnp = NULL;
 	vfsp.vnfs_flags = VNFS_ADDFSREF | VNFS_NOCACHE;
 

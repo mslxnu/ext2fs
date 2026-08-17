@@ -208,7 +208,8 @@ ext2_valloc(struct vnode *pvp, int mode, struct ucred *cred, struct vnode **vpp)
 	 * There is no lock flag to pass either: XNU vnodes come back from
 	 * vnode_create() with an iocount and no lock mode to choose.
 	 */
-	error = ext2_vget(vnode_mount(pvp), ino, vpp, vfs_context_current());
+	error = ext2_vget_typed(vnode_mount(pvp), ino, (mode_t)mode, vpp,
+	    vfs_context_current());
 	if (error) {
 		ext2_vfree(pvp, ino, mode);
 		return (error);
