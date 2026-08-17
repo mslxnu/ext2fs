@@ -15,7 +15,7 @@ MAKE=make
 
 SUBDIRS=
 
-UNPORTED=	e2undel extfsmgr e2fsprogs
+UNPORTED=	e2undel extfsmgr
 
 all: debug
 

@@ -1,0 +1,87 @@
+BSD 3-Clause License
+
+Copyright (c) 2022-2026 Sunneva N. Mariu
+Copyright (c) 1980, 1982, 1983, 1986, 1989, 1990, 1991, 1993, 1994
+        The Regents of the University of California.  All rights reserved.
+Copyright (c) 1995 The University of Utah and
+        the Computer Systems Laboratory at the University of Utah (CSL).
+        All rights reserved.
+Copyright (c) 1994 James A. Jegers
+Copyright (c) 1996, 1997 Christos Zoulas.  All rights reserved.
+Copyright (c) 1997 Manuel Bouyer.
+Copyright (c) 2007 Izumi Tsutsui.  All rights reserved.
+Copyright (c) 2009 Aditya Sarawgi
+Copyright (c) 2010, 2012 Zheng Liu <lz@freebsd.org>
+Copyright (c) 2012 Vyacheslav Matyushin
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+
+
+================================================================================
+Scope
+================================================================================
+
+The terms above cover the file system itself and everything built from it:
+
+    kext/           the ext2fs kernel extension
+    fs/             the ext2fs.fs bundle and its four helper programs
+    include/        the shared on-disk and compatibility headers
+    installer/      the installer package and disk image
+    tests/          the test programs
+    Makefile, Makefile.inc, .github/
+    tools/com.beako.ext2fs.plist and tools/ext2fs-load
+                    the boot-time loader and the LaunchDaemon that runs it
+
+Those sources descend from the Berkeley fast file system by way of the
+FreeBSD, NetBSD and OpenBSD ext2fs ports.  Most carry the three-clause form
+reproduced above; a few carry the two-clause form, which the three-clause
+terms satisfy.  No file in the tree carries the old advertising clause.
+
+tools/ is otherwise a holding area for third-party work, and the terms above
+do NOT cover any of the following.  Nothing here relicenses them, and the BSD
+terms above must not be read as applying to them:
+
+    tools/e2undel       GNU GPL.  Includes file(1) code by Ian F. Darwin.
+    tools/extfsmgr      Apple Public Source License, from ext2fsx.
+    vendor/libutil      Apple Public Source License.
+    vendor/diskdev_cmds Apple Public Source License.
+                        See vendor/diskdev_cmds/APPLE_LICENSE.
+    vendor/CoreOSMakefiles
+                        Apple Public Source License.
+                        See vendor/CoreOSMakefiles/APPLE_LICENSE.
+    lib/libkext         BSD 2-Clause, Copyright (c) 2018 lynnl.  Unlike the
+                        rest of this list it IS built and linked into the
+                        kernel extension.  See lib/libkext/LICENSE.
+
+With the exception of lib/libkext, none of those is built, linked against or
+shipped by any target in this repository's Makefiles: the tools/ entries are
+kept for reference and SUBDIRS in tools/Makefile is empty, and vendor/libutil
+supplies only a header (mntopts.h) to the userland tools.  No part of the
+kernel extension, the bundle or the installer is derived from them.
+
+In particular, newfs_ext2fs is not derived from e2fsprogs despite its
+mke2fs.c filename; see the note at the top of fs/newfs_ext2fs/mke2fs.c.

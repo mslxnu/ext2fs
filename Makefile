@@ -129,7 +129,7 @@ kextfs:
 
 endif
 
-# Optional third-party tools (e2fsprogs and friends). The four programs the
+# Optional third-party tools. The four programs the
 # file system itself needs are built by fs/ and staged into the bundle there,
 # because Contents/Resources is where diskarbitrationd resolves
 # FSProbeExecutable / FSMountExecutable / FSFormatExecutable /
@@ -164,6 +164,8 @@ pkg: kextfs tools
 	@echo "==> Building product archive"
 	mkdir -p $(OUT)/pkgres
 	cp installer/resources/welcome.html installer/resources/conclusion.html $(OUT)/pkgres/
+	@# The <license> pane reads this by name out of the resources directory.
+	cp LICENSE $(OUT)/pkgres/LICENSE
 	sed -e 's/__KEXTVERSION__/$(VERSION)/g' installer/distribution.xml.in > $(OUT)/distribution.xml
 	productbuild --distribution $(OUT)/distribution.xml --package-path $(OUT) \
 	             --resources $(OUT)/pkgres $(PKG_OUT)
