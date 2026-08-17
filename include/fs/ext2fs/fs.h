@@ -111,7 +111,7 @@
 
 /* get block containing inode from its number x */
 #define	ino_to_fsba(fs, x)                                              \
-        ((fs)->e2fs_gd[ino_to_cg((fs), (x))].ext2bgd_i_tables +         \
+        (EXT2_GD((fs), ino_to_cg((fs), (x)))->ext2bgd_i_tables +         \
         (((x) - 1) % (fs)->e2fs->e2fs_ipg) / (fs)->e2fs_ipb)
 
 /* get offset for inode in block */

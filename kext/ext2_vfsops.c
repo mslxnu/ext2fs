@@ -166,6 +166,17 @@ ext2_mountfs(struct vnode *devvp, struct mount *mp, vfs_context_t ctx)
 		/* Mountable, but not the way it was asked for. */
 		error = EROFS;
 		goto out;
+	} else if (error == 3) {
+		/*
+		 * The volume is well formed, it just uses features this driver
+		 * does not implement. That is not EINVAL: mount(8) renders a
+		 * bare EINVAL from a local file system as "specified device
+		 * does not match mounted device", which sends the reader off
+		 * to look at devices. ENOTSUP says what is actually wrong, and
+		 * the printf above names the offending feature.
+		 */
+		error = ENOTSUP;
+		goto out;
 	} else if (error != 0) {
 		error = EINVAL;
 		goto out;
@@ -803,32 +814,18 @@ ext2_check_sb_compat(struct ext2fs *es, int ronly)
 			if (mask & ext2_incompat_names[i].mask)
 				printf(" %s", ext2_incompat_names[i].name);
 		printf("\n");
-		return (1);
+		return (3);
 	}
 
 	/*
-	 * Incompatible features: those we implement fully, those we can only
-	 * read (force R/O), and the rest (refuse entirely).
+	 * What is left after removing everything we implement is the set that
+	 * forces read-only. Clearing EXT2F_INCOMPAT_SUPP rather than a
+	 * hand-written subset of it matters: the list here used to name
+	 * extents, flex_bg and meta_bg but not filetype, so every volume with
+	 * filetype set - which is every volume mke2fs has produced by default
+	 * for twenty years - was refused a read-write mount with EROFS.
 	 */
-	tmp = es->e2fs_features_incompat;
-	mask = tmp & ~(EXT2F_INCOMPAT_SUPP | EXT4F_RO_INCOMPAT_SUPP);
-	if (mask != 0) {
-		printf("ext2fs: unsupported incompat features:");
-		for (i = 0; i < nitems(ext2_incompat_names); i++)
-			if (mask & ext2_incompat_names[i].mask)
-				printf(" %s", ext2_incompat_names[i].name);
-		printf("\n");
-		return (1);
-	}
-
-	/*
-	 * Extents are now fully supported (insert/split/grow), so they no
-	 * longer belong in the read-only set. A journal awaiting replay is
-	 * handled below: recovery runs before the mount completes, after
-	 * which the RECOVER flag is cleared and the volume is safe to write.
-	 */
-	tmp &= ~(EXT2F_INCOMPAT_EXTENTS | EXT2F_INCOMPAT_FLEX_BG |
-	    EXT2F_INCOMPAT_META_BG);
+	tmp &= ~EXT2F_INCOMPAT_SUPP;
 	if (!ronly && tmp != 0) {
 		printf("ext2fs: read-only mount required for:");
 		for (i = 0; i < nitems(ext2_incompat_names); i++)
@@ -899,7 +896,29 @@ compute_sb_data(struct vnode *devvp, struct ext2fs *es,
 	/* s_resuid / s_resgid ? */
 	fs->e2fs_gcount = (es->e2fs_bcount - es->e2fs_first_dblock +
 	    EXT2_BLOCKS_PER_GROUP(fs) - 1) / EXT2_BLOCKS_PER_GROUP(fs);
-	e2fs_descpb = fs->e2fs_bsize / sizeof(struct ext2_gd);
+	/*
+	 * Group descriptors are EXT2_MIN_GD_SIZE bytes unless the volume
+	 * carries the 64bit feature, in which case the superblock says how
+	 * big they really are - 64, for anything mke2fs writes with
+	 * metadata_csum. Everything that walks the table has to use this
+	 * stride, which is what EXT2_GD() is for; taking it from
+	 * sizeof(struct ext2_gd) instead read every group after the first
+	 * from the wrong offset.
+	 */
+	fs->e2fs_gdsize = EXT2_MIN_GD_SIZE;
+	if (es->e2fs_rev > E2FS_REV0 &&
+	    (es->e2fs_features_incompat & EXT2F_INCOMPAT_64BIT) &&
+	    es->e3fs_desc_size != 0)
+		fs->e2fs_gdsize = es->e3fs_desc_size;
+	if (fs->e2fs_gdsize < EXT2_MIN_GD_SIZE ||
+	    (fs->e2fs_gdsize & (fs->e2fs_gdsize - 1)) != 0 ||
+	    fs->e2fs_gdsize > fs->e2fs_bsize) {
+		printf("ext2fs: nonsensical group descriptor size %u\n",
+		    fs->e2fs_gdsize);
+		return (EINVAL);
+	}
+
+	e2fs_descpb = fs->e2fs_bsize / fs->e2fs_gdsize;
 	db_count = (fs->e2fs_gcount + e2fs_descpb - 1) / e2fs_descpb;
 	fs->e2fs_gdbcount = db_count;
 	fs->e2fs_gd = _MALLOC(db_count * fs->e2fs_bsize,
@@ -925,8 +944,8 @@ compute_sb_data(struct vnode *devvp, struct ext2fs *es,
 			return (error);
 		}
 		e2fs_cgload((struct ext2_gd *)buf_dataptr(bp),
-		    &fs->e2fs_gd[
-			i * fs->e2fs_bsize / sizeof(struct ext2_gd)],
+		    (struct ext2_gd *)((char *)fs->e2fs_gd +
+			(size_t)i * fs->e2fs_bsize),
 		    fs->e2fs_bsize);
 		buf_brelse(bp);
 		bp = NULL;
@@ -934,7 +953,7 @@ compute_sb_data(struct vnode *devvp, struct ext2fs *es,
 	/* Initialization for the ext2 Orlov allocator variant. */
 	fs->e2fs_total_dir = 0;
 	for (i = 0; i < (int)fs->e2fs_gcount; i++)
-		fs->e2fs_total_dir += fs->e2fs_gd[i].ext2bgd_ndirs;
+		fs->e2fs_total_dir += EXT2_GD(fs, i)->ext2bgd_ndirs;
 
 	/*
 	 * Largest file this volume can hold.
@@ -1158,8 +1177,8 @@ ext2_cgupdate(struct ext2mount *mp, int waitfor)
 			allerror = EIO;
 			break;
 		}
-		e2fs_cgsave(&fs->e2fs_gd[
-		    i * fs->e2fs_bsize / sizeof(struct ext2_gd)],
+		e2fs_cgsave((struct ext2_gd *)((char *)fs->e2fs_gd +
+		    (size_t)i * fs->e2fs_bsize),
 		    (struct ext2_gd *)buf_dataptr(bp), fs->e2fs_bsize);
 		if (waitfor == MNT_WAIT)
 			error = buf_bwrite(bp);

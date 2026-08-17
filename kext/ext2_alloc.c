@@ -309,18 +309,18 @@ ext2_dirpref(struct inode *pip)
 		mincg = prefcg;
 		minndir = fs->e2fs_ipg;
 		for (cg = prefcg; cg < (int)fs->e2fs_gcount; cg++)
-			if (fs->e2fs_gd[cg].ext2bgd_ndirs < minndir &&
-			    fs->e2fs_gd[cg].ext2bgd_nifree >= avgifree &&
-			    fs->e2fs_gd[cg].ext2bgd_nbfree >= avgbfree) {
+			if (EXT2_GD(fs, cg)->ext2bgd_ndirs < minndir &&
+			    EXT2_GD(fs, cg)->ext2bgd_nifree >= avgifree &&
+			    EXT2_GD(fs, cg)->ext2bgd_nbfree >= avgbfree) {
 				mincg = cg;
-				minndir = fs->e2fs_gd[cg].ext2bgd_ndirs;
+				minndir = EXT2_GD(fs, cg)->ext2bgd_ndirs;
 			}
 		for (cg = 0; cg < prefcg; cg++)
-			if (fs->e2fs_gd[cg].ext2bgd_ndirs < minndir &&
-			    fs->e2fs_gd[cg].ext2bgd_nifree >= avgifree &&
-			    fs->e2fs_gd[cg].ext2bgd_nbfree >= avgbfree) {
+			if (EXT2_GD(fs, cg)->ext2bgd_ndirs < minndir &&
+			    EXT2_GD(fs, cg)->ext2bgd_nifree >= avgifree &&
+			    EXT2_GD(fs, cg)->ext2bgd_nbfree >= avgbfree) {
 				mincg = cg;
-				minndir = fs->e2fs_gd[cg].ext2bgd_ndirs;
+				minndir = EXT2_GD(fs, cg)->ext2bgd_ndirs;
 			}
 
 		return (mincg);
@@ -354,16 +354,16 @@ ext2_dirpref(struct inode *pip)
 	 */
 	prefcg = ino_to_cg(fs, pip->i_number);
 	for (cg = prefcg; cg < (int)fs->e2fs_gcount; cg++)
-		if (fs->e2fs_gd[cg].ext2bgd_ndirs < maxndir &&
-		    fs->e2fs_gd[cg].ext2bgd_nifree >= minifree &&
-		    fs->e2fs_gd[cg].ext2bgd_nbfree >= minbfree) {
+		if (EXT2_GD(fs, cg)->ext2bgd_ndirs < maxndir &&
+		    EXT2_GD(fs, cg)->ext2bgd_nifree >= minifree &&
+		    EXT2_GD(fs, cg)->ext2bgd_nbfree >= minbfree) {
 			if (fs->e2fs_contigdirs[cg] < maxcontigdirs)
 				return (cg);
 		}
 	for (cg = 0; cg < prefcg; cg++)
-		if (fs->e2fs_gd[cg].ext2bgd_ndirs < maxndir &&
-		    fs->e2fs_gd[cg].ext2bgd_nifree >= minifree &&
-		    fs->e2fs_gd[cg].ext2bgd_nbfree >= minbfree) {
+		if (EXT2_GD(fs, cg)->ext2bgd_ndirs < maxndir &&
+		    EXT2_GD(fs, cg)->ext2bgd_nifree >= minifree &&
+		    EXT2_GD(fs, cg)->ext2bgd_nbfree >= minbfree) {
 			if (fs->e2fs_contigdirs[cg] < maxcontigdirs)
 				return (cg);
 		}
@@ -371,10 +371,10 @@ ext2_dirpref(struct inode *pip)
 	 * This is a backstop when we have deficit in space.
 	 */
 	for (cg = prefcg; cg < (int)fs->e2fs_gcount; cg++)
-		if (fs->e2fs_gd[cg].ext2bgd_nifree >= avgifree)
+		if (EXT2_GD(fs, cg)->ext2bgd_nifree >= avgifree)
 			return (cg);
 	for (cg = 0; cg < prefcg; cg++)
-		if (fs->e2fs_gd[cg].ext2bgd_nifree >= avgifree)
+		if (EXT2_GD(fs, cg)->ext2bgd_nifree >= avgifree)
 			break;
 	return (cg);
 }
@@ -492,18 +492,18 @@ ext2_alloccg(struct inode *ip, int cg, daddr64_t bpref, int size)
 	/* XXX ondisk32 */
 	fs = ip->i_e2fs;
 	ump = ip->i_ump;
-	if (fs->e2fs_gd[cg].ext2bgd_nbfree == 0)
+	if (EXT2_GD(fs, cg)->ext2bgd_nbfree == 0)
 		return (0);
 	EXT2_UNLOCK(ump);
 	error = buf_meta_bread(ip->i_devvp, fsbtodb(fs,
-		fs->e2fs_gd[cg].ext2bgd_b_bitmap),
+		EXT2_GD(fs, cg)->ext2bgd_b_bitmap),
 		(int)fs->e2fs_bsize, NOCRED, &bp);
 	if (error) {
 		buf_brelse(bp);
 		EXT2_LOCK(ump);
 		return (0);
 	}
-	if (fs->e2fs_gd[cg].ext2bgd_nbfree == 0) {
+	if (EXT2_GD(fs, cg)->ext2bgd_nbfree == 0) {
 		/*
 		 * Another thread allocated the last block in this
 		 * group while we were waiting for the buffer.
@@ -610,7 +610,7 @@ gotit:
 	EXT2_LOCK(ump);
 	ext2_clusteracct(fs, bbp, cg, bno, -1);
 	fs->e2fs->e2fs_fbcount--;
-	fs->e2fs_gd[cg].ext2bgd_nbfree--;
+	EXT2_GD(fs, cg)->ext2bgd_nbfree--;
 	fs->e2fs_fmod = 1;
 	EXT2_UNLOCK(ump);
 	buf_bdwrite(bp);
@@ -639,7 +639,7 @@ ext2_clusteralloc(struct inode *ip, int cg, daddr64_t bpref, int len)
 
 	EXT2_UNLOCK(ump);
 	error = buf_meta_bread(ip->i_devvp,
-	    fsbtodb(fs, fs->e2fs_gd[cg].ext2bgd_b_bitmap),
+	    fsbtodb(fs, EXT2_GD(fs, cg)->ext2bgd_b_bitmap),
 	    (int)fs->e2fs_bsize, NOCRED, &bp);
 	if (error)
 		goto fail_lock;
@@ -710,7 +710,7 @@ ext2_clusteralloc(struct inode *ip, int cg, daddr64_t bpref, int len)
 		setbit(bbp, bno + i);
 		ext2_clusteracct(fs, bbp, cg, bno + i, -1);
 		fs->e2fs->e2fs_fbcount--;
-		fs->e2fs_gd[cg].ext2bgd_nbfree--;
+		EXT2_GD(fs, cg)->ext2bgd_nbfree--;
 	}
 	fs->e2fs_fmod = 1;
 	EXT2_UNLOCK(ump);
@@ -744,18 +744,18 @@ ext2_nodealloccg(struct inode *ip, int cg, daddr64_t ipref, int mode)
 		ipref = 0;
 	fs = ip->i_e2fs;
 	ump = ip->i_ump;
-	if (fs->e2fs_gd[cg].ext2bgd_nifree == 0)
+	if (EXT2_GD(fs, cg)->ext2bgd_nifree == 0)
 		return (0);
 	EXT2_UNLOCK(ump);	
 	error = buf_meta_bread(ip->i_devvp, fsbtodb(fs,
-		fs->e2fs_gd[cg].ext2bgd_i_bitmap),
+		EXT2_GD(fs, cg)->ext2bgd_i_bitmap),
 		(int)fs->e2fs_bsize, NOCRED, &bp);
 	if (error) {
 		buf_brelse(bp);
 		EXT2_LOCK(ump);
 		return (0);
 	}
-	if (fs->e2fs_gd[cg].ext2bgd_nifree == 0) {
+	if (EXT2_GD(fs, cg)->ext2bgd_nifree == 0) {
 		/*
 		 * Another thread allocated the last i-node in this
 		 * group while we were waiting for the buffer.
@@ -788,11 +788,11 @@ ext2_nodealloccg(struct inode *ip, int cg, daddr64_t ipref, int mode)
 gotit:
 	setbit(ibp, ipref);
 	EXT2_LOCK(ump);
-	fs->e2fs_gd[cg].ext2bgd_nifree--;
+	EXT2_GD(fs, cg)->ext2bgd_nifree--;
 	fs->e2fs->e2fs_ficount--;
 	fs->e2fs_fmod = 1;
 	if ((mode & IFMT) == IFDIR) {
-		fs->e2fs_gd[cg].ext2bgd_ndirs++;
+		EXT2_GD(fs, cg)->ext2bgd_ndirs++;
 		fs->e2fs_total_dir++;
 	}
 	EXT2_UNLOCK(ump);
@@ -823,7 +823,7 @@ ext2_blkfree(struct inode *ip, e4fs_daddr_t bno, long size)
 		return;
 	}
 	error = buf_meta_bread(ip->i_devvp,
-		fsbtodb(fs, fs->e2fs_gd[cg].ext2bgd_b_bitmap),
+		fsbtodb(fs, EXT2_GD(fs, cg)->ext2bgd_b_bitmap),
 		(int)fs->e2fs_bsize, NOCRED, &bp);
 	if (error) {
 		buf_brelse(bp);
@@ -840,7 +840,7 @@ ext2_blkfree(struct inode *ip, e4fs_daddr_t bno, long size)
 	EXT2_LOCK(ump);
 	ext2_clusteracct(fs, bbp, cg, bno, 1);
 	fs->e2fs->e2fs_fbcount++;
-	fs->e2fs_gd[cg].ext2bgd_nbfree++;
+	EXT2_GD(fs, cg)->ext2bgd_nbfree++;
 	fs->e2fs_fmod = 1;
 	EXT2_UNLOCK(ump);
 	buf_bdwrite(bp);
@@ -869,7 +869,7 @@ ext2_vfree(struct vnode *pvp, ino_t ino, int mode)
 
 	cg = ino_to_cg(fs, ino);
 	error = buf_meta_bread(pip->i_devvp,
-		fsbtodb(fs, fs->e2fs_gd[cg].ext2bgd_i_bitmap),
+		fsbtodb(fs, EXT2_GD(fs, cg)->ext2bgd_i_bitmap),
 		(int)fs->e2fs_bsize, NOCRED, &bp);
 	if (error) {
 		buf_brelse(bp);
@@ -886,9 +886,9 @@ ext2_vfree(struct vnode *pvp, ino_t ino, int mode)
 	clrbit(ibp, ino);
 	EXT2_LOCK(ump);
 	fs->e2fs->e2fs_ficount++;
-	fs->e2fs_gd[cg].ext2bgd_nifree++;
+	EXT2_GD(fs, cg)->ext2bgd_nifree++;
 	if ((mode & IFMT) == IFDIR) {
-		fs->e2fs_gd[cg].ext2bgd_ndirs--;
+		EXT2_GD(fs, cg)->ext2bgd_ndirs--;
 		fs->e2fs_total_dir--;
 	}
 	fs->e2fs_fmod = 1;

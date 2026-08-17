@@ -101,22 +101,59 @@ main(int argc, char *argv[])
 		err(1, "realpath %s", argv[1]);
 
 	if (mount(MOUNT_EXT2FS, fs_name, mntflags, &args) == -1) {
+		int hint = 0;
+
 		switch (errno) {
 		case EMFILE:
 			errcause = "mount table full";
 			break;
 		case EINVAL:
-			errcause =
-			    "specified device does not match mounted device";
+			/*
+			 * Upstream said "specified device does not match
+			 * mounted device" here. That describes one cause of
+			 * EINVAL - a mismatched update mount - and every
+			 * other cause arrived wearing it, which is a good way
+			 * to send someone looking at the wrong thing. The
+			 * driver returns EINVAL when the superblock is not
+			 * one it can make sense of.
+			 */
+			errcause = "not an ext2/ext3/ext4 file system, or the "
+			    "superblock is damaged";
+			hint = 1;
+			break;
+		case ENOTSUP:
+			errcause = "the file system uses features this driver "
+			    "does not support";
+			hint = 1;
+			break;
+		case EROFS:
+			errcause = "the file system can only be mounted "
+			    "read-only; retry with -o rdonly";
+			hint = 1;
+			break;
+		case EPERM:
+			errcause = "the file system is not clean; run "
+			    "fsck_ext2fs, or mount -o rdonly";
 			break;
 		case EOPNOTSUPP:
-			errcause = "filesystem not supported by kernel";
+			errcause = "file system not supported by the kernel "
+			    "(is the ext2fs kext loaded?)";
 			break;
 		default:
 			errcause = strerror(errno);
 			break;
 		}
-		errx(1, "%s on %s: %s", args.fspec, fs_name, errcause);
+		warnx("%s on %s: %s", args.fspec, fs_name, errcause);
+		/*
+		 * The driver names the offending feature, or whatever else it
+		 * objected to, with printf(9). That only reaches the kernel
+		 * log, so point at it rather than leaving the accurate
+		 * diagnosis somewhere the reader does not know to look.
+		 */
+		if (hint)
+			warnx("for the specific reason, see: log show --last 1m"
+			    " --predicate 'process == \"kernel\"' | grep ext2fs");
+		exit(1);
 	}
 	exit(0);
 }

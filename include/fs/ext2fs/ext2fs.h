@@ -100,7 +100,16 @@ struct ext2fs {
 	uint32_t  e3fs_last_orphan;	/* start of list of inodes to delete */
 	uint32_t  e3fs_hash_seed[4];	/* HTREE hash seed */
 	char      e3fs_def_hash_version; /* Default hash version to use */
-	char      e3fs_reserved_char_pad;
+	char      e3fs_jnl_backup_type;
+	/*
+	 * Size of a group descriptor, in bytes. Zero on a volume without the
+	 * 64bit feature, where descriptors are always EXT2_MIN_GD_SIZE. With
+	 * 64bit (and therefore with metadata_csum, which requires it) mke2fs
+	 * writes 64 instead, and the table has to be walked at that stride -
+	 * see EXT2_GD(). Until this was named it was anonymous alignment
+	 * padding, which is why the stride was silently assumed to be 32.
+	 */
+	uint16_t  e3fs_desc_size;
 	uint32_t  e3fs_default_mount_opts;
 	uint32_t  e3fs_first_meta_bg;	/* First metablock block group */
 	uint32_t  e3fs_mkfs_time;      /* when the fs was created */
@@ -158,6 +167,7 @@ struct m_ext2fs {
 	off_t    e2fs_maxfilesize;
 	struct   ext2_gd *e2fs_gd; /* Group Descriptors */
 	int32_t  e2fs_contigsumsize;    /* size of cluster summary array */
+	uint32_t e2fs_gdsize;           /* on-disk bytes per group descriptor */
 	int32_t *e2fs_maxcluster;       /* max cluster in each cyl group */
 	struct   csum *e2fs_clustersum; /* cluster summary in each cyl group */
 };
@@ -255,7 +265,8 @@ struct csum {
  * but operations that touch the affected feature will degrade gracefully.
  */
 #define	EXT4F_RO_INCOMPAT_SUPP		(EXT2F_INCOMPAT_RECOVER | \
-					 EXT2F_INCOMPAT_64BIT)
+					 EXT2F_INCOMPAT_64BIT | \
+					 EXT2F_INCOMPAT_CSUM_SEED)
 
 /*
  * Feature names, for telling the user which flag stopped a mount rather than
@@ -311,6 +322,25 @@ static const struct ext2_feature ext2_incompat_names[] = {
 	( EXT2_SB(sb)->e2fs->e2fs_features_compat & htole32(mask) )
 #define	EXT2_HAS_RO_COMPAT_FEATURE(sb,mask)			\
 	( EXT2_SB(sb)->e2fs->e2fs_features_rocompat & htole32(mask) )
+/*
+ * Address group descriptor cg.
+ *
+ * e2fs_gd points at a byte-faithful copy of the on-disk descriptor table, and
+ * the stride between entries is whatever the superblock says - 32 bytes
+ * normally, 64 on a 64bit volume, which is every volume mke2fs creates with
+ * metadata_csum. Indexing e2fs_gd[] directly assumes sizeof(struct ext2_gd),
+ * which reads descriptor i at slot 2i on such a volume: group 1 comes back as
+ * the zeroed upper half of group 0, so its bitmaps appear to live at block 0.
+ * Nothing failed loudly - the first group is right, and a one-group volume is
+ * entirely right, which is why small test images never showed it.
+ */
+#define	EXT2_GD(fs, cg)						\
+	((struct ext2_gd *)((char *)(fs)->e2fs_gd +		\
+	    (size_t)(cg) * (size_t)(fs)->e2fs_gdsize))
+
+/* Descriptor size on a volume without the 64bit feature. */
+#define	EXT2_MIN_GD_SIZE	32
+
 #define	EXT2_HAS_INCOMPAT_FEATURE(sb,mask)			\
 	( EXT2_SB(sb)->e2fs->e2fs_features_incompat & htole32(mask) )
 
